@@ -20,13 +20,13 @@
 
 
 //                              ProxyC                             ProxyF
-//                      |------|---------|--------|            |-------| 
-//                      | local| encrypt |        |            |       |
-//                      |listen| ---->   |        |  GreatWall |       |   decrypt
-//   local machine <--->|      |         | remote | <--------->|       | ----------> google.com
-//                      |client| decrypt | socket |            |       | <----------
-//                      |accept| <------ |        |            |       |   encrypt
-//                      |------|---------|--------|            |-------|
+//                      |-------|---------|---------|            |-------| 
+//                      | local | encrypt |         |            |       |
+//                      |listen | ---->   |         |  GreatWall |       |   decrypt
+//   local machine <--->|       |         |         | <--------->|       | ----------> google.com
+//                      |client1| decrypt | remote1 |            |       | <----------
+//                      |client2| <------ | remote2 |            |       |   encrypt
+//                      |-------|---------|---------|            |-------|
 
 #define BUFFER_SIZE      65535
 #define MAX_CONNECTION_COUNT 128
