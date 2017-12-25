@@ -1,4 +1,5 @@
 #include<stdio.h>  
+#include <stdlib.h>
 #include<poll.h>  
 #include<netdb.h>
 #include<sys/types.h>  
@@ -7,145 +8,255 @@
 #include<unistd.h>  
 #include<string.h>  
 #include<errno.h>
+#include <time.h>
+#include <sys/time.h>
+#include <stdarg.h>
 
   
-#define ADDR "192.168.32.144"  
-#define PORT 8080  
+//#define ADDR "192.168.32.144"  
+//#define PORT 8080  
+//#define ADDR_APACHE "18.216.47.167"  
+//#define PORT_APACHE 8080
 
-#define ADDR_APACHE "18.216.47.167"  
-#define PORT_APACHE 8080
-#define SIZE 1024
-  
-int main()  
-{  
-	  int i, n;
-    int ret=0;  
-    int length;
-    char key[7];
-    int maxsocket;
-    int apa,ser,cli;  
-    char buf[SIZE]={0};  
-    char apabuf[SIZE]={0};  
-    struct pollfd fds[5]={0};  
-    struct sockaddr_in apaaddr,seraddr,cliaddr;  
-    socklen_t clilen=sizeof(cliaddr);  
-  
-    apaaddr.sin_family=AF_INET;  
-    apaaddr.sin_addr.s_addr=inet_addr(ADDR_APACHE);  
-    apaaddr.sin_port=htons(PORT_APACHE);  
-  
-    seraddr.sin_family=AF_INET;  
-    seraddr.sin_addr.s_addr=inet_addr(ADDR);  
-    seraddr.sin_port=htons(PORT);  
-  
-start:  
-    apa=socket(AF_INET,SOCK_STREAM,0);  
-    printf("Connecting to foreign proxy server %s:%d... \n", ADDR_APACHE, PORT_APACHE);
-    ret = connect(apa,(struct sockaddr*)&apaaddr,sizeof(apaaddr));  
-    while (ret < 0)
+
+//                              ProxyC                             ProxyF
+//                      |------|---------|--------|            |-------| 
+//                      | local| encrypt |        |            |       |
+//                      |listen| ---->   |        |  GreatWall |       |   decrypt
+//   local machine <--->|      |         | remote | <--------->|       | ----------> google.com
+//                      |client| decrypt | socket |            |       | <----------
+//                      |accept| <------ |        |            |       |   encrypt
+//                      |------|---------|--------|            |-------|
+
+#define BUFFER_SIZE      65535
+#define MAX_CONNECTION_COUNT 128
+
+struct proxy_connection
+{
+    int  client_socket, remote_socket;
+    char client_ip[16], remote_ip[16];
+    int  client_port,   remote_port;
+    char client_buf[BUFFER_SIZE], remote_buf[BUFFER_SIZE];
+    int  client_buf_len, remote_buf_len;
+};
+struct proxy_connection *pconnections[MAX_CONNECTION_COUNT];
+
+int log_info(char *fmt, ... )
+{
+    time_t timep; 
+    int     n;
+    va_list args;
+    FILE *f;
+    char strtime[128], *p;
+
+    f = fopen("log.txt", "a+");
+
+    time (&timep); 
+    sprintf(strtime, "%s", ctime(&timep));
+    p = strtime + strlen(strtime) - 1;
+    while(*p == '\n' || *p == '\r')
     {
-    	printf("Connecting failed, errno = %d, try again 5 seconds later.\n", errno);
-    	sleep(5);
-	    ret = connect(apa,(struct sockaddr*)&apaaddr,sizeof(apaaddr));  
+        *p = '\0';
+        p--;
     }
+    fprintf(f, "[%s]",strtime);
 
+    va_start(args, fmt);
+    n = vfprintf(f, fmt, args);
+    va_end(args);
 
-    ser=socket(AF_INET,SOCK_STREAM,0);  
-    bind(ser,(struct sockaddr*)&seraddr,sizeof(seraddr));  
-    fds[0].fd=ser;  
-    fds[0].events=POLLIN;
-    ret = listen(fds[0].fd,5);  
+    fclose(f);
+    return n;    
+}
+  
+int main(int argc, char* argv[])  
+{  
+    char key[7];
+    int length;
+    int i, j, ret=0;  
+    fd_set  rdfs;
+    struct sockaddr_in remoteaddr,localaddr,clientaddr;  
+    socklen_t clientlen = sizeof(clientaddr);  
+    int    remote , local, client;  
+    
+    
+    if(argc != 5)
+    {
+        printf("Usage: %s LocalIp LocalPort RemoteIp RemotePort\n", argv[0]);
+        return -1;
+    }
+  
+    localaddr.sin_family       = AF_INET;  
+    localaddr.sin_addr.s_addr  = inet_addr(argv[1]);  
+    localaddr.sin_port         = htons(atoi(argv[2]));  
+
+    remoteaddr.sin_family      = AF_INET;  
+    remoteaddr.sin_addr.s_addr = inet_addr(argv[3]);
+    remoteaddr.sin_port        = htons(atoi(argv[4]));  
+  
+
+    local     = socket(AF_INET,SOCK_STREAM,0);  
+    bind(local,(struct sockaddr*)&localaddr,sizeof(localaddr));  
+    ret = listen(local, 5);  
     if(ret < 0)
     {
-    	printf("Failed to listen on %s:%d errno=%d\n", ADDR, PORT, errno);
-    	return 1;
+    	printf("Failed to listen on %s:%s errno=%d\n", argv[1], argv[2], errno);
+    	return -1;
     }
-    printf("Listening ... \n");
+
+    for( i = 0; i < MAX_CONNECTION_COUNT; i++)
+    {
+        pconnections[i] = NULL;
+    }
 
     while(1)  
     {  
-        memset(buf,0,SIZE);  
-        memset(apabuf,0,SIZE);  
-        ret=poll(fds,sizeof(fds)/sizeof(fds[0]),-1);  
+        int max_fd = -1;
+        FD_ZERO(&rdfs);
+        FD_SET(local, &rdfs);
+        max_fd = local;
+        for(i = 0; i < MAX_CONNECTION_COUNT; i++)
+        {
+            if(pconnections[i] != NULL)
+            {
+                FD_SET(pconnections[i]->client_socket, &rdfs);
+                max_fd = pconnections[i]->client_socket > max_fd ? pconnections[i]->client_socket : max_fd;
+                FD_SET(pconnections[i]->remote_socket, &rdfs);
+                max_fd = pconnections[i]->remote_socket > max_fd ? pconnections[i]->remote_socket : max_fd;
+            }
+        }
+        ret = select(max_fd + 1,&rdfs,NULL, NULL, NULL);
         if(ret<0)  
         {  
-            printf("poll error\n");  
-            break;  
-        }  
-        if(fds[0].revents&POLLIN)  
-        {  
-            cli=accept(fds[0].fd,(struct sockaddr*)&cliaddr,&clilen);
-            if( -1 == cli) 
-            {
-            	continue;
+            printf("select error \n");  
+        }
+        else if(ret == 0)
+        {
+            printf("time out\n");
+        }
+        else
+        {
+            if(FD_ISSET(local, &rdfs))  
+            {  
+                client = accept(local,(struct sockaddr*)&clientaddr,&clientlen);
+                if(client > 0)
+                {
+                    for(i = 0; i < MAX_CONNECTION_COUNT; i++)
+                    {
+                        if(pconnections[i] == NULL)
+                        {
+                            pconnections[i] = (struct proxy_connection*)malloc(sizeof(struct proxy_connection));
+                            pconnections[i]->client_socket        = client;
+                            strcpy(pconnections[i]->client_ip,inet_ntoa(clientaddr.sin_addr));
+                            pconnections[i]->client_port   = ntohs(clientaddr.sin_port);
+                            break;
+                        }
+                    }
+                    if(i == MAX_CONNECTION_COUNT)
+                    {
+                        log_info("ERR: failed to connect to the server, too many connections\n");
+                        close(client);
+                    }
+                    else
+                    {
+                        log_info("Connected to %s:%d\n",inet_ntoa(clientaddr.sin_addr),  
+                                ntohs(clientaddr.sin_port));
+                        
+                        remote = socket(AF_INET,SOCK_STREAM,0);  
+                        ret    = connect(remote,(struct sockaddr*)&remoteaddr,sizeof(remoteaddr));
+                        if (ret < 0)
+                        {
+    	                      log_info("Connecting to remote server failed, errno = %d.\n", errno);
+    	                      free(pconnections[i]);
+    	                      pconnections[i] = NULL;
+    	                      close(client);
+                        }
+                        else
+                        {
+                            pconnections[i]->remote_socket = remote;
+                            pconnections[i]->remote_port   = ntohs(remoteaddr.sin_port);
+                            strcpy(pconnections[i]->remote_ip,inet_ntoa(remoteaddr.sin_addr));
+                        }
+                    }
+                }
             }
-            printf("connect to %s:%d\n",inet_ntoa(cliaddr.sin_addr),  
-                    ntohs(cliaddr.sin_port));  
-            
-            i = recv(cli,buf + 8 ,SIZE - 8, 0);
-
-            if(i < 0) //error
+            else
             {
-            	printf("error receive data %d\n", i);
-            	continue;
+                for(i = 0; i < MAX_CONNECTION_COUNT; i++)
+                {
+                    if(pconnections[i] != NULL)
+                    {
+                        if(FD_ISSET(pconnections[i]->client_socket, &rdfs))
+                        {//read from client, encrypt and then send it to remote
+                            length = recv(pconnections[i]->client_socket, pconnections[i]->client_buf + 8, BUFFER_SIZE - 8, 0);
+                            if(length < 0)
+                            {
+                                log_info("error receive data %d\n", i);
+                            }
+                            else if(length == 0) //connection closed
+                            {
+            	                  log_info("socket %s, %d closed!\n", pconnections[i]->client_ip, pconnections[i]->client_port);
+            	                  close(pconnections[i]->client_socket);
+            	                  close(pconnections[i]->remote_socket);
+            	                  free(pconnections[i]);
+            	                  pconnections[i] = NULL;
+                            }
+                            else
+                            {
+                                strcpy(key, "abcd");        
+                                memcpy(pconnections[i]->client_buf, &length, 4);
+                                memcpy(pconnections[i]->client_buf + 4, key, 4);
+                                for(j = 0; j < length; j++)
+                                {
+            	                      pconnections[i]->client_buf[j + 8] ^= key[j % 4];
+                                }
+                                if(send(pconnections[i]->remote_socket, pconnections[i]->client_buf, length + 8, 0) < 0)
+                                {
+            	                      log_info("error sending data to %s:%d\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
+                                }
+                            }
+                        }
+                        if(FD_ISSET(pconnections[i]->remote_socket, &rdfs))
+                        {//read from remote, decrypt and then send it to client
+                            length = recv(pconnections[i]->remote_socket, pconnections[i]->remote_buf + pconnections[i]->remote_buf_len, BUFFER_SIZE - pconnections[i]->remote_buf_len, 0);
+                            if(length < 0)
+                            {
+                                log_info("error receive data %d\n", i);
+                            }
+                            else if(length == 0) //connection closed
+                            {
+            	                  log_info("socket %s, %d closed!\n", pconnections[i]->remote_ip, pconnections[i]->remote_port);
+            	                  close(pconnections[i]->client_socket);
+            	                  close(pconnections[i]->remote_socket);
+            	                  free(pconnections[i]);
+            	                  pconnections[i] = NULL;
+                            }
+                            else
+                            {
+                                pconnections[i]->remote_buf_len += length;
+                                memcpy(&length, pconnections[i]->remote_buf, 4);
+                                while(length + 8 < pconnections[i]->remote_buf_len)
+                                {
+                                    memcpy(key, pconnections[i]->remote_buf + 4, 4);
+                                    key[4] = '\0';
+                                    for(j = 0; j < length; j++)
+                                    {
+            	                          pconnections[i]->remote_buf[j + 8] ^= key[j % 4];
+                                    }
+                                    if(send(pconnections[i]->client_socket, pconnections[i]->remote_buf, length + 8, 0) < 0)
+                                    {
+            	                          log_info("error sending data to %s:%d\n" , pconnections[i]->client_ip, pconnections[i]->client_port);
+                                    }
+                                    pconnections[i]->remote_buf_len -= length + 8;
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            else if(i == 0) // connection break
-            {
-            	printf("socket %s, %d closed!\n", inet_ntoa(cliaddr.sin_addr), ntohs(cliaddr.sin_port));
-            	continue;
-            }
-            
-            length = i;
-            printf("%d bytes received\n", length);
-            printf("%s\n", buf + 8);
-    
-            strcpy(key, "abcdef");        
-            memcpy(buf, &length, 2);
-            memcpy(buf + 2, key, 6);
-            for(i = 0; i < length; i++)
-            {
-            	buf[i + 8] ^= key[i % 6];
-            }
-            if(send(apa,buf,SIZE,0) < 0)
-            {
-            	printf("error sending data to %s:%d\n" , ADDR_APACHE, PORT_APACHE);
-            }
-            
-            do
-            {
-	            n = 0;
-							memset(apabuf, 0, SIZE);
-	            while (n < SIZE)
-	            {
-	            	i = recv(apa,apabuf + n,SIZE - n, 0);
-	            	if(i == 0)
-	            	{
-	            		printf("connection break %s:%d\n", ADDR_APACHE, PORT_APACHE);
-	            		close(cli);
-	            		goto start;
-	            	}
-	            	if(i > 0)
-	            	{
-	            		n += i;
-	            	}
-	            }
-	     
-	            memcpy(&length, apabuf, 2);
-	            memcpy(key, apabuf + 2, 6);
-	            printf("length = %d, key = %s\n", length, key);
-	            for(i = 0; i < length; i++)
-	            {
-	            	apabuf[i + 8] ^= key[i % 6];
-	            	printf("%c", apabuf[i + 8]);
-	            }
-	            if(send(cli,apabuf + 8, length, 0) < 0)
-	            {
-	            	printf("error senting content to %s:%d", inet_ntoa(cliaddr.sin_addr), ntohs(cliaddr.sin_port));
-	            }
-	          }while(length == SIZE - 8);
-        }  
+        }
     }
-    close(apa);
     printf("Exited! \n");
+    close(local);
     return 0;  
 }  
