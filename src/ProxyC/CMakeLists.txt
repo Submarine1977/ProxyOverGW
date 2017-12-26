@@ -1,1 +1,1 @@
-ADD_EXECUTABLE(porxyc ProxyC.c)
+ADD_EXECUTABLE(proxyc ProxyC.c)

@@ -1,1 +1,1 @@
-ADD_EXECUTABLE(porxyf ProxyF.c)
+ADD_EXECUTABLE(proxyf ProxyF.c)

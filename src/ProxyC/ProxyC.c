@@ -20,14 +20,15 @@
 
 
 //                              ProxyC                             ProxyF
-//                      |-------|---------|---------|            |-------| 
-//                      | local | encrypt |         |            |       |
-//                      |listen | ---->   |         |  GreatWall |       |   decrypt
-//   local machine <--->|       |         |         | <--------->|       | ----------> google.com
-//                      |client1| decrypt | remote1 |            |       | <----------
-//                      |client2| <------ | remote2 |            |       |   encrypt
-//                      |-------|---------|---------|            |-------|
+//                 |-------|---------|---------|            |-------|---------|--------| 
+//                 | local | encrypt |         |            | server|         |        |
+//    local        |listen | ---->   |         |  GreatWall | listen| decrypt |        |
+//    machine <--->|       |         |         | <--------->|       |-------->|(google)|
+//                 |client1| decrypt | remote1 |            |remote1|<--------| web1   |
+//                 |client2| <------ | remote2 |            |remote2|  encrypt| web2   |
+//                 |-------|---------|---------|            |-------|---------|--------|
 
+#define DEBUG            1
 #define BUFFER_SIZE      65535
 #define MAX_CONNECTION_COUNT 128
 
@@ -49,7 +50,7 @@ int log_info(char *fmt, ... )
     FILE *f;
     char strtime[128], *p;
 
-    f = fopen("log.txt", "a+");
+    f = fopen("log_c.txt", "a+");
 
     time (&timep); 
     sprintf(strtime, "%s", ctime(&timep));
@@ -149,6 +150,7 @@ int main(int argc, char* argv[])
                             pconnections[i]->client_socket        = client;
                             strcpy(pconnections[i]->client_ip,inet_ntoa(clientaddr.sin_addr));
                             pconnections[i]->client_port   = ntohs(clientaddr.sin_port);
+                            pconnections[i]->client_buf_len = 0;
                             break;
                         }
                     }
@@ -176,6 +178,7 @@ int main(int argc, char* argv[])
                             pconnections[i]->remote_socket = remote;
                             pconnections[i]->remote_port   = ntohs(remoteaddr.sin_port);
                             strcpy(pconnections[i]->remote_ip,inet_ntoa(remoteaddr.sin_addr));
+                            pconnections[i]->remote_buf_len = 0;
                         }
                     }
                 }
@@ -184,70 +187,86 @@ int main(int argc, char* argv[])
             {
                 for(i = 0; i < MAX_CONNECTION_COUNT; i++)
                 {
-                    if(pconnections[i] != NULL)
+                    if(pconnections[i] == NULL)
                     {
-                        if(FD_ISSET(pconnections[i]->client_socket, &rdfs))
-                        {//read from client, encrypt and then send it to remote
-                            length = recv(pconnections[i]->client_socket, pconnections[i]->client_buf + 8, BUFFER_SIZE - 8, 0);
-                            if(length < 0)
+                        continue;
+                    }
+                    if(FD_ISSET(pconnections[i]->client_socket, &rdfs))
+                    {//read from client, encrypt and then send it to remote
+                    	  memset(pconnections[i]->client_buf, 0, BUFFER_SIZE);
+                        length = recv(pconnections[i]->client_socket, pconnections[i]->client_buf + 8, BUFFER_SIZE - 8, 0);
+                        log_info("\n%s\n", pconnections[i]->client_buf + 8);
+                        if(length < 0)
+                        {
+                            log_info("error receive data %d\n", i);
+                        }
+                        else if(length == 0) //connection closed
+                        {
+        	                  log_info("socket %s: %d closed!\n", pconnections[i]->client_ip, pconnections[i]->client_port);
+        	                  close(pconnections[i]->client_socket);
+        	                  close(pconnections[i]->remote_socket);
+        	                  free(pconnections[i]);
+        	                  pconnections[i] = NULL;
+        	                  continue;
+                        }
+                        else
+                        {
+                            strcpy(key, "abcd");        
+                            memcpy(pconnections[i]->client_buf, &length, 4);
+                            memcpy(pconnections[i]->client_buf + 4, key, 4);
+                            for(j = 0; j < length; j++)
                             {
-                                log_info("error receive data %d\n", i);
+        	                      pconnections[i]->client_buf[j + 8] ^= key[j % 4];
                             }
-                            else if(length == 0) //connection closed
+                            if(send(pconnections[i]->remote_socket, pconnections[i]->client_buf, length + 8, 0) < 0)
                             {
-            	                  log_info("socket %s, %d closed!\n", pconnections[i]->client_ip, pconnections[i]->client_port);
-            	                  close(pconnections[i]->client_socket);
-            	                  close(pconnections[i]->remote_socket);
-            	                  free(pconnections[i]);
-            	                  pconnections[i] = NULL;
-                            }
-                            else
-                            {
-                                strcpy(key, "abcd");        
-                                memcpy(pconnections[i]->client_buf, &length, 4);
-                                memcpy(pconnections[i]->client_buf + 4, key, 4);
-                                for(j = 0; j < length; j++)
-                                {
-            	                      pconnections[i]->client_buf[j + 8] ^= key[j % 4];
-                                }
-                                if(send(pconnections[i]->remote_socket, pconnections[i]->client_buf, length + 8, 0) < 0)
-                                {
-            	                      log_info("error sending data to %s:%d\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
-                                }
+        	                      log_info("error sending data to %s:%d\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
                             }
                         }
-                        if(FD_ISSET(pconnections[i]->remote_socket, &rdfs))
-                        {//read from remote, decrypt and then send it to client
-                            length = recv(pconnections[i]->remote_socket, pconnections[i]->remote_buf + pconnections[i]->remote_buf_len, BUFFER_SIZE - pconnections[i]->remote_buf_len, 0);
-                            if(length < 0)
+                    }
+                    if(FD_ISSET(pconnections[i]->remote_socket, &rdfs))
+                    {//read from remote, decrypt and then send it to client
+                        length = recv(pconnections[i]->remote_socket, pconnections[i]->remote_buf + pconnections[i]->remote_buf_len, BUFFER_SIZE - pconnections[i]->remote_buf_len, 0);
+                        if(length < 0)
+                        {
+                            log_info("error receive data %d\n", i);
+                        }
+                        else if(length == 0) //connection closed
+                        {
+        	                  log_info("socket %s, %d closed!\n", pconnections[i]->remote_ip, pconnections[i]->remote_port);
+        	                  close(pconnections[i]->client_socket);
+        	                  close(pconnections[i]->remote_socket);
+        	                  free(pconnections[i]);
+        	                  pconnections[i] = NULL;
+        	                  continue;
+                        }
+                        else
+                        {
+                            pconnections[i]->remote_buf_len += length;
+                            memcpy(&length, pconnections[i]->remote_buf, 4);
+                            while(length + 8 <= pconnections[i]->remote_buf_len)
                             {
-                                log_info("error receive data %d\n", i);
-                            }
-                            else if(length == 0) //connection closed
-                            {
-            	                  log_info("socket %s, %d closed!\n", pconnections[i]->remote_ip, pconnections[i]->remote_port);
-            	                  close(pconnections[i]->client_socket);
-            	                  close(pconnections[i]->remote_socket);
-            	                  free(pconnections[i]);
-            	                  pconnections[i] = NULL;
-                            }
-                            else
-                            {
-                                pconnections[i]->remote_buf_len += length;
-                                memcpy(&length, pconnections[i]->remote_buf, 4);
-                                while(length + 8 < pconnections[i]->remote_buf_len)
+                                memcpy(key, pconnections[i]->remote_buf + 4, 4);
+                                key[4] = '\0';
+                                for(j = 0; j < length; j++)
                                 {
-                                    memcpy(key, pconnections[i]->remote_buf + 4, 4);
-                                    key[4] = '\0';
-                                    for(j = 0; j < length; j++)
-                                    {
-            	                          pconnections[i]->remote_buf[j + 8] ^= key[j % 4];
-                                    }
-                                    if(send(pconnections[i]->client_socket, pconnections[i]->remote_buf, length + 8, 0) < 0)
-                                    {
-            	                          log_info("error sending data to %s:%d\n" , pconnections[i]->client_ip, pconnections[i]->client_port);
-                                    }
-                                    pconnections[i]->remote_buf_len -= length + 8;
+        	                          pconnections[i]->remote_buf[j + 8] ^= key[j % 4];
+                                }
+                                pconnections[i]->remote_buf[length + 8] = '\0';
+                                log_info("\n%s\n", pconnections[i]->remote_buf + 8);
+                                if(send(pconnections[i]->client_socket, pconnections[i]->remote_buf + 8, length, 0) < 0)
+                                {
+        	                          log_info("error sending data to %s:%d\n" , pconnections[i]->client_ip, pconnections[i]->client_port);
+                                }
+                                memmove(pconnections[i]->remote_buf, pconnections[i]->remote_buf + length + 8, pconnections[i]->remote_buf_len - length - 8);
+                                pconnections[i]->remote_buf_len -= length + 8;
+                                if(pconnections[i]->remote_buf_len <= 0)
+                                {
+                                    break;
+                                }
+                                else
+                                {
+                                    memcpy(&length, pconnections[i]->remote_buf, 4);
                                 }
                             }
                         }

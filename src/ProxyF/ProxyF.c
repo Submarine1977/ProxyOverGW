@@ -8,10 +8,63 @@
 #include<unistd.h>  
 #include<string.h>  
 #include<errno.h>
+#include <time.h>
+#include <sys/time.h>
+#include <stdarg.h>
+
+
+//                              ProxyC                             ProxyF
+//                 |-------|---------|---------|            |-------|---------|--------| 
+//                 | local | encrypt |         |            | server|         |        |
+//    local        |listen | ---->   |         |  GreatWall | listen| decrypt |        |
+//    machine <--->|       |         |         | <--------->|       |-------->|(google)|
+//                 |client1| decrypt | remote1 |            |remote1|<--------| web1   |
+//                 |client2| <------ | remote2 |            |remote2|  encrypt| web2   |
+//                 |-------|---------|---------|            |-------|---------|--------|
   
-#define PORT 8080  
-#define SIZE 1024 
+#define DEBUG            1
+#define BUFFER_SIZE      65535
+#define MAX_CONNECTION_COUNT 128
  
+struct proxy_connection
+{
+    int  web_socket, remote_socket;
+    char web_ip[16], remote_ip[16];
+    int  web_port,   remote_port;
+    char web_buf[BUFFER_SIZE], remote_buf[BUFFER_SIZE];
+    int  web_buf_len, remote_buf_len;
+    char http_header[4096];
+};
+struct proxy_connection *pconnections[MAX_CONNECTION_COUNT];
+
+int log_info(char *fmt, ... )
+{
+    time_t timep; 
+    int     n;
+    va_list args;
+    FILE *f;
+    char strtime[128], *p;
+
+    f = fopen("log_f.txt", "a+");
+
+    time (&timep); 
+    sprintf(strtime, "%s", ctime(&timep));
+    p = strtime + strlen(strtime) - 1;
+    while(*p == '\n' || *p == '\r')
+    {
+        *p = '\0';
+        p--;
+    }
+    fprintf(f, "[%s]",strtime);
+
+    va_start(args, fmt);
+    n = vfprintf(f, fmt, args);
+    va_end(args);
+
+    fclose(f);
+    return n;    
+}
+
 int get_hostname(char* buf,  char *hostname, int *port)
 {
 	int i = 0;
@@ -38,271 +91,281 @@ int get_hostname(char* buf,  char *hostname, int *port)
 	return 1;
 };
 
-int main()  
+int main(int argc, char *argv[])  
 {  
-    int ret=0; 
-    int i, n;
-    int maxsocket;  
-    int apa,ser,cli;  
-    char buf[SIZE]={0};
-    char hostname[1024];
-    int  port;
-    char apabuf[SIZE]={0};  
-    struct pollfd fds[5]={0};  
-    struct hostent *host;
-    int connected;
+    char key[7];
+    int length;
+    int i, j, ret=0;  
+    fd_set  rdfs;
+    struct sockaddr_in remoteaddr,serveraddr,webaddr;  
+    socklen_t remotelen = sizeof(remoteaddr);  
+    int    remote , server, web;  
     
-    struct sockaddr_in apaaddr,seraddr,cliaddr;  
-    socklen_t clilen=sizeof(cliaddr);  
+    
+    if(argc != 2)
+    {
+        printf("Usage: %s Port\n", argv[0]);
+        return -1;
+    }
   
-    seraddr.sin_family=AF_INET;  
-    seraddr.sin_addr.s_addr=htonl(INADDR_ANY);  
-    seraddr.sin_port=htons(PORT);  
-    ser=socket(AF_INET,SOCK_STREAM,0);  
-    bind(ser,(struct sockaddr*)&seraddr,sizeof(seraddr));  
-    fds[0].fd=ser;  
-    fds[0].events=POLLIN;  
-    listen(fds[0].fd,5); 
+    serveraddr.sin_family=AF_INET;  
+    serveraddr.sin_addr.s_addr=htonl(INADDR_ANY);  
+    serveraddr.sin_port=htons(atoi(argv[1]));
+      
+    server=socket(AF_INET,SOCK_STREAM,0);  
+    bind(server,(struct sockaddr*)&serveraddr,sizeof(serveraddr));  
+    ret = listen(server,5); 
+    if(ret < 0)
+    {
+    	printf("Failed to listen on %s errno=%d\n", argv[1], errno);
+    	return -1;
+    }
 
-start:    
-    memset(buf,0,SIZE);  
-    memset(apabuf,0,SIZE);  
-    ret=poll(fds,sizeof(fds)/sizeof(fds[0]),-1);  
-    if(ret<0)  
-    {  
-        printf("poll error\n");  
-    }  
-    if(fds[0].revents&POLLIN)  
-    {  
-        cli=accept(fds[0].fd,(struct sockaddr*)&cliaddr,&clilen);
+    for( i = 0; i < MAX_CONNECTION_COUNT; i++)
+    {
+        pconnections[i] = NULL;
+    }
 
-        printf("connect to %s:%d\n",inet_ntoa(cliaddr.sin_addr),  
-                ntohs(cliaddr.sin_port));
-        
-        ////////////////////////////////////////////////////
-        //get encrypted HTTP Request                      //
-        //length      -- 2 bytes, length of content       //
-        //encrypt key -- 6 bytes                          //
-        //content     -- no more than 1016 bytes          //
-        //if length < 1016, the block is the last block.  //
-        ////////////////////////////////////////////////////
-		    short  length;
-		    char   key[7];
-		    host = NULL;
-        connected = 0;
-        
-		    while(1)
-		    {
-			    do
-			    { 
-            n = 0;
-						memset(buf, 0, SIZE);
-            while (n < SIZE)
+    while(1)  
+    {  
+        int max_fd = -1;
+        FD_ZERO(&rdfs);
+        FD_SET(server, &rdfs);
+        max_fd = server;
+        for(i = 0; i < MAX_CONNECTION_COUNT; i++)
+        {
+            if(pconnections[i] != NULL)
             {
-            	i = recv(cli,buf + n,SIZE - n,0);
-            	if(i == 0)
-            	{
-            		printf("connection break %s:%d\n", inet_ntoa(cliaddr.sin_addr), ntohs(cliaddr.sin_port));
-            		close(cli);
-            		goto start;
-            	}
-            	if(i > 0)
-            	{
-            		n += i;
-            	}
+                FD_SET(pconnections[i]->remote_socket, &rdfs);
+                max_fd = pconnections[i]->remote_socket > max_fd ? pconnections[i]->remote_socket : max_fd;
+                if(pconnections[i]->web_socket > 0)
+                {
+                    FD_SET(pconnections[i]->web_socket, &rdfs);
+                    max_fd = pconnections[i]->web_socket > max_fd ? pconnections[i]->web_socket : max_fd;
+                }
             }
-				    memcpy(&length, buf, 2);
-				    memcpy(key, buf + 2, 6);
-				    key[6] = '\0';
-				    printf("from %s:%d, length = %d, key = %s\n", inet_ntoa(cliaddr.sin_addr), ntohs(cliaddr.sin_port), length, key);
-				    for(i = 0; i < length; i++)
-				    {
-				    	buf[i + 8] ^= key[i % 6];
-				    }
-				    if(host == NULL)
-				    {
-					    apaaddr.sin_family=AF_INET;  
-					    apa=socket(AF_INET,SOCK_STREAM,0);  
-	            get_hostname(buf + 8, hostname, &port);
-	            host = gethostbyname(hostname);
-	            apaaddr.sin_port = htons(port);
-	            apaaddr.sin_addr = *((struct in_addr*)host->h_addr);
-	            printf("\nhostname = %s, port = %d\n", hostname, port);
-	            ret = connect(apa,(struct sockaddr*)&apaaddr,sizeof(apaaddr));
-	            if(ret != 0)
-	            {
-	            	printf("%d,%d\n", ret, errno);
-	            }
-              connected = 1;
-				    }
-            send(apa,buf + 8,length,0);
-            printf("11111--%s\n", buf + 8);
-			    }while(length >= 1016);
-
-          do
-          {
-						length = 0;
-						char *header, *content_length;
-						int totallength = 0;
-						char *keep_alive;
-						memset(apabuf, 0, SIZE);
-						do
-						{
-              printf("2222\n");
-							i = recv(apa,apabuf + 8 + length, SIZE - 8 - length, 0);
-              printf("3333\n");
-							if(i == 0)
-							{
-								connected = 0;
-            		printf("connection break %s:%d\n", hostname, port);
-								break;
-							}
-              length += i;
-              printf("2222---%s\n", apabuf + 8);
-              
-            } while( (header = strstr(apabuf + 8, "\r\n\r\n")) == NULL);
-            
-            printf("%s\n", apabuf + 8);
-            
-            keep_alive = strstr(apabuf + 8, "Keep-Alive:");
-            
-            if(i != 0 && (content_length = strstr(apabuf + 8, "Content-Length:")) != NULL)
-            {
-            	totallength = header + strlen("\r\n\r\n")- (apabuf + 8) + atoi(content_length + strlen("Content-Length:"));
-	          	printf("totallength = %d,length = %d\n", totallength, length);
-	            
-	            totallength -= length;
-	            if(totallength == 0)
-	            {
-		            printf("from %s:%d, length = %d\n", hostname, port, length);
-								memcpy(apabuf, &length, 2);
-								strcpy(key, "123456");
-							  memcpy(apabuf + 2, key, 6);
-						    for(i = 0; i < length; i ++)
-						    {
-							    apabuf[i + 8] ^= key[i % 6];
-						    }
-		            send(cli,apabuf,SIZE,0);  
-	          		memset(apabuf, 0, SIZE);
-	            	length = 0;
-	            }
-	            while(totallength > 0)
-	            {
-	            	while(length < 1016)
-	            	{
-									i = recv(apa,apabuf + 8 + length, SIZE - 8 - length, 0);
-									if(i == 0)
-									{
-								    connected = 0;
-										break;
-									}
-		              length += i;
-	            		totallength -= i;
-	            		if(totallength <= 0)
-	            		{
-	            			break;
-	            		}
-	            	}
-		            printf("from %s:%d, length = %d\n", hostname, port, length);
-								memcpy(apabuf, &length, 2);
-								strcpy(key, "123456");
-							  memcpy(apabuf + 2, key, 6);
-						    for(i = 0; i < length; i ++)
-						    {
-							    apabuf[i + 8] ^= key[i % 6];
-						    }
-		            send(cli,apabuf,SIZE,0);  
-	          		memset(apabuf, 0, SIZE);
-	            	length = 0;
-	            }
-	          }
-	          else if(strstr(apabuf + 8, "Transfer-Encoding: chunked") != NULL)
-	          {
-	          	char end[5];
-	          	memset(end, sizeof(end), 0);
-	          	if(apabuf + length > header + sizeof("\r\n\r\n"))
-	          	{
-	          		memcpy(end, apabuf + length - 4, 4);
-	          	}
-	          	while(strcmp(end, "\r\n\r\n") != 0)
-	          	{
-	            	while(length < 1016)
-	            	{
-									i = recv(apa,apabuf + 8 + length, SIZE - 8 - length, 0);
-									if(i == 0)
-									{
-										connected = 0;
-                    break;
-									}
-		              length += i;
-		              if(length >= 4)
-		              {
-			          		memcpy(end, apabuf + 8 + length - 4, 4);
-		              }
-		              else if(length == 3)
-		              {
-		              	end[0] = end [3];
-			          		memcpy(end + 1, apabuf + 8 + length - 3, 3);
-		              }
-		              else if(length == 2)
-		              {
-		              	end[0] = end [2];
-		              	end[1] = end [3];
-			          		memcpy(end + 2, apabuf + 8 + length - 2, 2);
-		              }
-		              else if(length == 1)
-		              {
-		              	end[0] = end [1];
-		              	end[1] = end [2];
-		              	end[2] = end [3];
-			          		memcpy(end + 3, apabuf + 8 + length - 1, 1);
-		              }
-		              if(strcmp(end, "\r\n\r\n") == 0)
-		              {
-		              	break;
-		              }
-	            	}
-		            printf("from %s:%d, length = %d\n", hostname, port, length);
-								memcpy(apabuf, &length, 2);
-								strcpy(key, "123456");
-							  memcpy(apabuf + 2, key, 6);
-							  printf("%s", apabuf+8);
-						    for(i = 0; i < length; i ++)
-						    {
-							    apabuf[i + 8] ^= key[i % 6];
-						    }
-		            send(cli,apabuf,SIZE,0);  
-	          		memset(apabuf, 0, SIZE);
-	            	length = 0;
-	          	}
-	          }
-	          else
-	          {
-	          	if(length != 0)
-	          	{
-	          		memset(apabuf, 0, SIZE);
-		            printf("from %s:%d, length = %d\n", hostname, port, length);
-								memcpy(apabuf, &length, 2);
-								strcpy(key, "123456");
-							  memcpy(apabuf + 2, key, 6);
-						    for(i = 0; i < length; i ++)
-						    {
-							    apabuf[i + 8] ^= key[i % 6];
-						    }
-		            send(cli,apabuf,SIZE,0);  
-	          	}
-	          }
-	          if(keep_alive == NULL || connected == 0)
-	          {
-	          	if(connected)
-	          	{
-	          		close(apa);
-	          		connected = 0;
-	          	}
-	          	host = NULL;
-	          }
-          }while(connected);
         }
-    }  
+        ret = select(max_fd + 1,&rdfs,NULL, NULL, NULL);
+        if(ret<0)  
+        {  
+            printf("select error \n");  
+        }
+        else if(ret == 0)
+        {
+            printf("time out\n");
+        }
+        else
+        {
+            if(FD_ISSET(server, &rdfs))  
+            {  
+                remote = accept(server,(struct sockaddr*)&remoteaddr,&remotelen);
+                if(remote > 0)
+                {
+                    for(i = 0; i < MAX_CONNECTION_COUNT; i++)
+                    {
+                        if(pconnections[i] == NULL)
+                        {
+                            pconnections[i] = (struct proxy_connection*)malloc(sizeof(struct proxy_connection));
+                            pconnections[i]->remote_socket  = remote;
+                            strcpy(pconnections[i]->remote_ip,inet_ntoa(remoteaddr.sin_addr));
+                            pconnections[i]->remote_port    = ntohs(remoteaddr.sin_port);
+                            pconnections[i]->remote_buf_len = 0;
+                            pconnections[i]->http_header[0] = '\0';
+                            break;
+                        }
+                    }
+                    if(i == MAX_CONNECTION_COUNT)
+                    {
+                        log_info("ERR: failed to connect to the server, too many connections\n");
+                        close(remote);
+                    }
+                    else
+                    {
+                        log_info("Connected to %s:%d\n",inet_ntoa(remoteaddr.sin_addr),  
+                                ntohs(remoteaddr.sin_port));
+                        pconnections[i]->web_socket = -1;
+                    }
+                }
+            }
+            else
+            {
+                for(i = 0; i < MAX_CONNECTION_COUNT; i++)
+                {
+                    if(pconnections[i] == NULL)
+                    {
+                        continue;
+                    }
+                    if(pconnections[i]->web_socket > 0 && FD_ISSET(pconnections[i]->web_socket, &rdfs))
+                    {//read from web, encrypt and then send it to remote
+                        memset(pconnections[i]->web_buf, 0, BUFFER_SIZE);
+                        length = recv(pconnections[i]->web_socket, pconnections[i]->web_buf + 8, BUFFER_SIZE - 8, 0);
+                        log_info("%s\n", pconnections[i]->web_buf + 8);
+                        if(length < 0)
+                        {
+                            log_info("error receive data %d\n", i);
+                        }
+                        else if(length == 0) //connection closed
+                        {
+        	                  log_info("socket %s: %d closed!\n", pconnections[i]->web_ip, pconnections[i]->web_port);
+        	                  close(pconnections[i]->web_socket);
+        	                  close(pconnections[i]->remote_socket);
+        	                  free(pconnections[i]);
+        	                  pconnections[i] = NULL;
+        	                  continue;
+                        }
+                        else
+                        {
+                            strcpy(key, "1234");        
+                            memcpy(pconnections[i]->web_buf, &length, 4);
+                            memcpy(pconnections[i]->web_buf + 4, key, 4);
+                            for(j = 0; j < length; j++)
+                            {
+        	                      pconnections[i]->web_buf[j + 8] ^= key[j % 4];
+                            }
+                            if(send(pconnections[i]->remote_socket, pconnections[i]->web_buf, length + 8, 0) < 0)
+                            {
+        	                      log_info("error sending data to %s:%d\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
+                            }
+                        }
+                    }
+                    if(FD_ISSET(pconnections[i]->remote_socket, &rdfs))
+                    {//read from remote, decrypt and then send it to web
+                        length = recv(pconnections[i]->remote_socket, pconnections[i]->remote_buf + pconnections[i]->remote_buf_len, BUFFER_SIZE - pconnections[i]->remote_buf_len, 0);
+                        if(length < 0)
+                        {
+                            log_info("error receive data %d\n", i);
+                        }
+                        else if(length == 0) //connection closed
+                        {
+        	                  log_info("socket %s, %d closed!\n", pconnections[i]->remote_ip, pconnections[i]->remote_port);
+        	                  if(pconnections[i]->web_socket > 0)
+        	                  {
+        	                      close(pconnections[i]->web_socket);
+        	                  }
+        	                  close(pconnections[i]->remote_socket);
+        	                  free(pconnections[i]);
+        	                  pconnections[i] = NULL;
+        	                  continue;
+                        }
+                        else
+                        {
+                            pconnections[i]->remote_buf_len += length;
+                            log_info("%d bytes received from China proxy!\n", length);
+                            memcpy(&length, pconnections[i]->remote_buf, 4);
+                            log_info("Content length = %d\n", length);
+                            while(length + 8 <= pconnections[i]->remote_buf_len)
+                            {
+                                memcpy(key, pconnections[i]->remote_buf + 4, 4);
+                                key[4] = '\0';
+                                log_info("Key = %s\n", key);
+                                for(j = 0; j < length; j++)
+                                {
+        	                          pconnections[i]->remote_buf[j + 8] ^= key[j % 4];
+                                }
+                                
+                                log_info("pconnections[%d]->web_socket = %d\n", i, pconnections[i]->web_socket);
+                                
+                                if(pconnections[i]->web_socket == -1)
+                                {//get header
+                                    j = 0;
+                                    char *str;
+                                    str = pconnections[i]->http_header + strlen(pconnections[i]->http_header);
+                                    while(str - pconnections[i]->http_header < 4095)
+                                    {
+                                        *str = pconnections[i]->remote_buf[j + 8];
+                                        *(str + 1) = '\0';
+                                        str++;
+                                        j++;
+                                        if(str - pconnections[i]->http_header > 4)
+                                        {
+                                            if(strncmp(str - 4, "\r\n\r\n", 4) == 0)
+                                            {
+                                                break;
+                                            }
+                                        }
+                                        if(j >= length)
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    if(str - pconnections[i]->http_header > 4 && strncmp(str - 4, "\r\n\r\n", 4) == 0)//got the header
+                                    {
+                                    	  //connect to the web server
+                                    	  char hostname[512];
+                                    	  int  port;
+                                    	  struct hostent *host;
+                                    	  
+                                    	  log_info("Header = %s\n", pconnections[i]->http_header);
+                                    	  
+			                                  webaddr.sin_family = AF_INET;  
+			                                  web = socket(AF_INET,SOCK_STREAM,0);  
+                                        get_hostname(pconnections[i]->http_header, hostname, &port);
+                                        host = gethostbyname(hostname);
+                                        webaddr.sin_port = htons(port);
+                                        webaddr.sin_addr = *((struct in_addr*)host->h_addr);
+                                        ret = connect(web,(struct sockaddr*)&webaddr,sizeof(webaddr));
+                                        if(ret != 0)
+                                        {
+                                            log_info("failed to connect to the website: ret = %d,errno = %d\n", ret, errno);
+                                            close(pconnections[i]->remote_socket);
+                                            free(pconnections[i]);
+                                            pconnections[i] = NULL;
+                                            break;
+                                        }
+                                        //send header	
+                                        strcpy(pconnections[i]->web_ip,inet_ntoa(webaddr.sin_addr));
+                                        pconnections[i]->web_port = ntohs(webaddr.sin_port);
+                                        pconnections[i]->web_socket = web;
+                                        log_info("Connected to %s:%d\n", pconnections[i]->web_ip, pconnections[i]->web_port);
+                                        log_info("header length = %d, str - pconnections[i]->http_header = %d, length =%d, j = %d\n", 
+                                                  strlen(pconnections[i]->http_header), str - pconnections[i]->http_header, length, j);                                        
+                                        if(send(pconnections[i]->web_socket, pconnections[i]->http_header, str - pconnections[i]->http_header, 0) < 0)
+                                        {
+        	                                  log_info("error sending data to %s:%d\n" , pconnections[i]->web_ip, pconnections[i]->web_port);
+                                        }
+                                        //send remaining content
+                                        if(send(pconnections[i]->web_socket, pconnections[i]->remote_buf + j, length - j, 0) < 0)
+                                        {
+        	                                  log_info("error sending data to %s:%d\n" , pconnections[i]->web_ip, pconnections[i]->web_port);
+                                        }
+                                    }
+                                    else //not get the server
+                                    {
+                                    	  //header buffer is full
+                                        if(str - pconnections[i]->http_header > 4095)
+                                        {
+                                            log_info("error wrong header: %s\n", pconnections[i]->http_header);
+                                            close(pconnections[i]->remote_socket);
+                                            free(pconnections[i]);
+                                            pconnections[i] = NULL;
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    if(send(pconnections[i]->web_socket, pconnections[i]->remote_buf, length + 8, 0) < 0)
+                                    {
+        	                              log_info("error sending data to %s:%d\n" , pconnections[i]->web_ip, pconnections[i]->web_port);
+                                    }
+                                }
+                                memmove(pconnections[i]->remote_buf, pconnections[i]->remote_buf + length + 8, pconnections[i]->remote_buf_len - length - 8);
+                                pconnections[i]->remote_buf_len -= length + 8;
+                                if(pconnections[i]->remote_buf_len <= 0)
+                                {
+                                    break;
+                                }
+                                else
+                                {
+                                    memcpy(&length, pconnections[i]->remote_buf, 4);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    printf("Exited! \n");
+    close(server);
     return 0;  
 }  
