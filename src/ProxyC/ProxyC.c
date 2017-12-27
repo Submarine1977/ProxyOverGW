@@ -69,6 +69,38 @@ int log_info(char *fmt, ... )
     fclose(f);
     return n;    
 }
+
+void dumpbuffer(char *buffer, int length, char* filename, ...)
+{
+    va_list args;
+    int i, j, n;
+    char str[16];
+    char name[128];
+
+    va_start(args, filename);
+    n = vsprintf(name, filename, args);
+    va_end(args);
+    
+    FILE *f;
+    f = fopen(name, "a+");
+    for(i = 0; i < length; i++)
+    {
+        sprintf(str, "%02x", buffer[i]);
+        fprintf(f, "%s ", str + strlen(str) - 2);
+        if((i + 1) % 32 == 0)
+        {
+            fprintf(f, "  ");
+            for(j = i - 31; j <= i; j++)
+            {
+                fprintf(f, "%c", buffer[j]);
+            }
+            fprintf(f, "\n");
+        }
+    }
+    fprintf(f, "\n");
+    fclose(f);
+};
+
   
 int main(int argc, char* argv[])  
 {  
@@ -179,6 +211,9 @@ int main(int argc, char* argv[])
                             pconnections[i]->remote_port   = ntohs(remoteaddr.sin_port);
                             strcpy(pconnections[i]->remote_ip,inet_ntoa(remoteaddr.sin_addr));
                             pconnections[i]->remote_buf_len = 0;
+                            log_info("Connection built from client(%s:%d) to proxyf(%s:%d)\n", 
+                                       pconnections[i]->client_ip, pconnections[i]->client_port, 
+                                       pconnections[i]->remote_ip, pconnections[i]->remote_port);
                         }
                     }
                 }
@@ -194,8 +229,9 @@ int main(int argc, char* argv[])
                     if(FD_ISSET(pconnections[i]->client_socket, &rdfs))
                     {//read from client, encrypt and then send it to remote
                     	  memset(pconnections[i]->client_buf, 0, BUFFER_SIZE);
-                        length = recv(pconnections[i]->client_socket, pconnections[i]->client_buf + 8, BUFFER_SIZE - 8, 0);
-                        log_info("\n%s\n", pconnections[i]->client_buf + 8);
+                        length     = recv(pconnections[i]->client_socket, pconnections[i]->client_buf + 8, BUFFER_SIZE - 8, 0);
+                        dumpbuffer(pconnections[i]->client_buf + 8, length, "recv_client_c_%s_%d.txt", pconnections[i]->client_ip, pconnections[i]->client_port);
+                        log_info("%d bytes was recieved from client %s:%d\n", length, pconnections[i]->client_ip, pconnections[i]->client_port);
                         if(length < 0)
                         {
                             log_info("error receive data %d\n", i);
@@ -218,22 +254,33 @@ int main(int argc, char* argv[])
                             {
         	                      pconnections[i]->client_buf[j + 8] ^= key[j % 4];
                             }
-                            if(send(pconnections[i]->remote_socket, pconnections[i]->client_buf, length + 8, 0) < 0)
+                            if((ret = send(pconnections[i]->remote_socket, pconnections[i]->client_buf, length + 8, 0)) < 0)
                             {
-        	                      log_info("error sending data to %s:%d\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
+        	                      log_info("error sending data to proxyf %s:%d\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
+                            }
+                            else if(ret < length + 8)
+                            {
+        	                      log_info("error sending data to proxyf %s:%d, not all data was sent\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
+                            }
+                            else
+                            {
+        	                      log_info("%d bytes was sent to proxyf %s:%d \n" , length + 8, pconnections[i]->remote_ip, pconnections[i]->remote_port);
+                                dumpbuffer(pconnections[i]->client_buf, length + 8, "send_remote_c_%s_%d.txt", pconnections[i]->remote_ip, pconnections[i]->remote_port);
                             }
                         }
                     }
                     if(FD_ISSET(pconnections[i]->remote_socket, &rdfs))
                     {//read from remote, decrypt and then send it to client
                         length = recv(pconnections[i]->remote_socket, pconnections[i]->remote_buf + pconnections[i]->remote_buf_len, BUFFER_SIZE - pconnections[i]->remote_buf_len, 0);
+                        dumpbuffer(pconnections[i]->remote_buf + pconnections[i]->remote_buf_len, length, "recv_remote_c_%s_%d.txt", pconnections[i]->remote_ip, pconnections[i]->remote_port);
+                        log_info("%d bytes received from proxyf %s:%d\n", length, pconnections[i]->remote_ip, pconnections[i]->remote_port);
                         if(length < 0)
                         {
-                            log_info("error receive data %d\n", i);
+                            log_info("error receive data from proxyf %d\n", i);
                         }
                         else if(length == 0) //connection closed
                         {
-        	                  log_info("socket %s, %d closed!\n", pconnections[i]->remote_ip, pconnections[i]->remote_port);
+        	                  log_info("proxyf socket %s, %d closed!\n", pconnections[i]->remote_ip, pconnections[i]->remote_port);
         	                  close(pconnections[i]->client_socket);
         	                  close(pconnections[i]->remote_socket);
         	                  free(pconnections[i]);
@@ -253,11 +300,22 @@ int main(int argc, char* argv[])
         	                          pconnections[i]->remote_buf[j + 8] ^= key[j % 4];
                                 }
                                 pconnections[i]->remote_buf[length + 8] = '\0';
-                                log_info("\n%s\n", pconnections[i]->remote_buf + 8);
-                                if(send(pconnections[i]->client_socket, pconnections[i]->remote_buf + 8, length, 0) < 0)
+                                
+                                
+                                if((ret = send(pconnections[i]->client_socket, pconnections[i]->remote_buf + 8, length, 0)) < 0)
                                 {
-        	                          log_info("error sending data to %s:%d\n" , pconnections[i]->client_ip, pconnections[i]->client_port);
+                                    log_info("error sending data to client(%s:%d)\n" , pconnections[i]->client_ip, pconnections[i]->client_port);
                                 }
+                                else if(ret < length)
+                                {
+                                    log_info("error sending data to client(%s:%d)--not all data was sent\n" , pconnections[i]->client_ip, pconnections[i]->client_port);
+                                }
+                                else
+                                {
+                                    dumpbuffer(pconnections[i]->remote_buf + 8, length, "send_client_c_%s_%d.txt", pconnections[i]->client_ip, pconnections[i]->client_port);
+                                    log_info("%d bytes was sent to client(%s:%d)\n", length, pconnections[i]->client_ip, pconnections[i]->client_port);
+                                }
+                                
                                 memmove(pconnections[i]->remote_buf, pconnections[i]->remote_buf + length + 8, pconnections[i]->remote_buf_len - length - 8);
                                 pconnections[i]->remote_buf_len -= length + 8;
                                 if(pconnections[i]->remote_buf_len <= 0)
