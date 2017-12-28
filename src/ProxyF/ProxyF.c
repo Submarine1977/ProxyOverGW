@@ -12,7 +12,6 @@
 #include <sys/time.h>
 #include <stdarg.h>
 
-
 //                              ProxyC                             ProxyF
 //                 |-------|---------|---------|            |-------|---------|--------| 
 //                 | local | encrypt |         |            | server|         |        |
@@ -26,17 +25,25 @@
 #define BUFFER_SIZE      65535
 #define MAX_CONNECTION_COUNT 128
  
+#define CONNECTION_STATUS_INIT 0
+#define CONNECTION_STATUS_AUTH 1
+#define CONNECTION_STATUS_CONN 1
+
 struct proxy_connection
 {
     int  web_socket, remote_socket;
     char web_ip[16], remote_ip[16];
     int  web_port,   remote_port;
-    char web_buf[BUFFER_SIZE], remote_buf[BUFFER_SIZE];
-    int  web_buf_len, remote_buf_len;
-    char http_header[4096];
+    char web_buf[BUFFER_SIZE], remote_buf[BUFFER_SIZE], message_buf[1024];
+    int  web_buf_len, remote_buf_len, message_buf_len;
+    char status;
 };
 struct proxy_connection *pconnections[MAX_CONNECTION_COUNT];
 
+int min(int x, int y)
+{
+    return x < y? x:y;
+}
 int log_info(char *fmt, ... )
 {
     time_t timep; 
@@ -96,45 +103,146 @@ void dumpbuffer(char *buffer, int length, char* filename, ...)
     fclose(f);
 };
 
-int get_hostname(char* buf,  char *hostname, int *port)
+void encrypt_message(char *buffer, int length, char*  key)
 {
-	int i = 0;
-	*port = 80;
-	char *str;
-	str = strstr(buf, "Host:");
-	str += strlen("Host:");
-	while(*str == ' ')
-	{
-		str ++;
-	}
-	while(*str != '\r' && *str != '\n')
-	{
-		hostname[i++] = *str++;
-	}
-	hostname[i] = '\0';
-	
-	str = strstr(hostname, ":");
-	if(NULL != str)
-	{
-		*str = '\0';
-		*port = atoi(str + 1);
-	}
-	return 1;
-};
+   int i, t = strlen(key);
+   for(i = 0; i < length; i++)
+   {
+      buffer[i] ^= key[i%t];
+   }
+}
+void decrypt_message(char *buffer, int length, char*  key)
+{
+   int i, t = strlen(key);
+   for(i = 0; i < length; i++)
+   {
+      buffer[i] ^= key[i%t];
+   }
+}
 
-void process_header(char * header)
+//+----+----------+----------+
+//|VER | NMETHODS | METHODS  |
+//+----+----------+----------+
+//| 1  |    1     | 1 to 255 |
+//+----+----------+----------+
+//-1 wrong
+//0  message not complete
+//1  succeeded
+int parse_auth_message(char * buffer, int length, char *number_methods, char* methods)
 {
-    char *connection, *p;
-    char str[4096];
-    connection = strstr(header, "Proxy-Connection:");
-    if(connection != NULL)
+    if(length < 2)
     {
-        //replace Proxy-Connection: with connection
-        p = connection + strlen("Proxy-Connection:");
-        strcpy(str, p);
-        *connection = '\0';
-        strcat(header, "Connection:");
-        strcat(header, str);
+        return 0;
+    }
+    if(buffer[0] != 5)
+    {
+        log_info("error sock5 auth_message btye[0] = %d\n", buffer[0]);
+        return -1;
+    }
+    if(length < 2 + (unsigned char)buffer[1])
+    {
+        return 0;
+    }
+    else if(length > 2 + (unsigned char)buffer[1])
+    {
+        log_info("error sock5 auth_message, message is too long\n");
+        return -1;
+    }
+    else
+    {
+        if(NULL != number_methods)
+        {
+            *number_methods = buffer[1];
+        } 
+        if(NULL != methods)
+        {
+            memcpy(methods, buffer + 2, (unsigned char)buffer[1]);
+        }
+        return 1;
+    }
+}
+//+----+-----+-------+------+----------+----------+
+//|VER | CMD |  RSV  | ATYP | DST.ADDR | DST.PORT |
+//+----+-----+-------+------+----------+----------+
+//| 1  |  1  | X'00' |  1   | Variable |    2     |
+//+----+-----+-------+------+----------+----------+
+//-1 wrong
+//0  message not complete
+//1  succeeded
+int parse_conn_message(char * buffer, int length, char* cmd, char* host, short* port)
+{
+    int t;
+    if(length < 6)
+    {
+        return 0;
+    }
+    if(buffer[0] != 5)
+    {
+        log_info("error sock5 conn_message btye[0] = %d\n", buffer[0]);
+        return -1;
+    }
+    *cmd = buffer[1];
+    if(buffer[3] == 1)//IPV4
+    {
+        if(length == 10)
+        {
+            sprintf(host, "%ud.%ud.%ud.%ud", buffer[4], buffer[5], buffer[6], buffer[7]);
+            memcpy(port, buffer + 8, 2);
+            return 1;
+        }
+        else if(length < 10)
+        {
+            return 0;
+        }
+        else
+        {
+            log_info("error sock5 conn_message, message is too long\n");
+            return -1;
+        }
+    }
+    else if(buffer[3] == 3)//Domain name
+    {
+        t = (unsigned char)buffer[4];
+        if(length == 7 + t)
+        {
+            memcpy(host, buffer + 5, t);
+            host[t] = '\0';
+            memcpy(port, buffer + 5 + t, 2);
+            return 1;
+        }
+        else if( length < 7 + t)
+        {
+            return 0;
+        }
+        else
+        {
+            log_info("error sock5 conn_message, message is too long\n");
+            return -1;
+        }
+    }
+    else if(buffer[3] == 4)//ip v6
+    {
+        log_info("error sock5 conn_message, not support ip v6\n");
+        return -1;
+    }
+    return -1;
+}
+
+void send_message(int socket, char* buffer, int length, char* ip, int port)
+{
+    int ret;
+    if((ret = send(socket, buffer, length, 0)) < 0)
+    {
+        log_info("error sending data to (%s:%d)\n" , ip, port);
+    }
+    else if(ret < length)
+    {
+        log_info("error sending data to (%s:%d)--not all data was sent\n" , ip, port);
+    }
+    else
+    {
+        dumpbuffer(buffer, length, "send_web_f_%s_%d.txt", ip, port);
+        log_info("%d bytes was sent to (%s:%d)\n", length, ip, port);
     }
 }
 
@@ -217,7 +325,7 @@ int main(int argc, char *argv[])
                             strcpy(pconnections[i]->remote_ip,inet_ntoa(remoteaddr.sin_addr));
                             pconnections[i]->remote_port    = ntohs(remoteaddr.sin_port);
                             pconnections[i]->remote_buf_len = 0;
-                            pconnections[i]->http_header[0] = '\0';
+                            pconnections[i]->status         = CONNECTION_STATUS_INIT;
                             break;
                         }
                     }
@@ -230,7 +338,8 @@ int main(int argc, char *argv[])
                     {
                         log_info("Connected to %s:%d\n",inet_ntoa(remoteaddr.sin_addr),  
                                 ntohs(remoteaddr.sin_port));
-                        pconnections[i]->web_socket = -1;
+                        pconnections[i]->web_socket  = -1;
+                        pconnections[i]->web_buf_len = 0;
                     }
                 }
             }
@@ -266,10 +375,7 @@ int main(int argc, char *argv[])
                             strcpy(key, "1234");        
                             memcpy(pconnections[i]->web_buf, &length, 4);
                             memcpy(pconnections[i]->web_buf + 4, key, 4);
-                            for(j = 0; j < length; j++)
-                            {
-        	                      pconnections[i]->web_buf[j + 8] ^= key[j % 4];
-                            }
+                            encrypt_message(pconnections[i]->web_buf, length, key);
                             if((ret = send(pconnections[i]->remote_socket, pconnections[i]->web_buf, length + 8, 0)) < 0)
                             {
         	                      log_info("error sending data to proxyc %s:%d\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
@@ -316,162 +422,106 @@ int main(int argc, char *argv[])
                                 memcpy(key, pconnections[i]->remote_buf + 4, 4);
                                 key[4] = '\0';
                                 log_info("Key = %s\n", key);
-                                for(j = 0; j < length; j++)
-                                {
-        	                          pconnections[i]->remote_buf[j + 8] ^= key[j % 4];
-                                }
+                                decrypt_message(pconnections[i]->remote_buf + 8, length, key);
                                 
-                                log_info("pconnections[%d]->web_socket = %d\n", i, pconnections[i]->web_socket);
-                                
-                                if(pconnections[i]->web_socket == -1)
-                                {//get header
-                                    j = 0;
-                                    char *str;
-                                    str = pconnections[i]->http_header + strlen(pconnections[i]->http_header);
-                                    while(str - pconnections[i]->http_header < 4095)
-                                    {
-                                        *str = pconnections[i]->remote_buf[j + 8];
-                                        *(str + 1) = '\0';
-                                        str++;
-                                        j++;
-                                        if(str - pconnections[i]->http_header > 4)
-                                        {
-                                            if(strncmp(str - 4, "\r\n\r\n", 4) == 0)
-                                            {
-                                                break;
-                                            }
-                                        }
-                                        if(j >= length)
-                                        {
-                                            break;
-                                        }
+                                log_info("pconnections[%d]->status = %d\n", i, pconnections[i]->status);
+                                if(pconnections[i]->status == CONNECTION_STATUS_INIT)
+                                {   
+                                    memcpy(pconnections[i]->message_buf + pconnections[i]->message_buf_len, pconnections[i]->remote_buf + 8, min(length, 1024 - pconnections[i]->message_buf_len));
+                                    pconnections[i]->message_buf_len += min(length, 1024 - pconnections[i]->message_buf_len);
+                                    ret = parse_auth_message(pconnections[i]->message_buf, pconnections[i]->message_buf_len, NULL, NULL);
+                                    if(ret == -1)
+                                    {//wrong message clear message buffer.
+                                        pconnections[i]->message_buf_len = 0;
                                     }
-                                    if(str - pconnections[i]->http_header > 4 && strncmp(str - 4, "\r\n\r\n", 4) == 0)//got the header
+                                    else if(ret == 1) //correct message
                                     {
-                                    	  //connect to the web server
-                                    	  char hostname[512];
-                                    	  int  port;
-                                    	  struct hostent *host;
-                                    	  
-                                    	  log_info("Header before process:\n%s\n", pconnections[i]->http_header);
-                                    	  
-                                    	  process_header(pconnections[i]->http_header);
+                                        pconnections[i]->status = CONNECTION_STATUS_AUTH;
+                                        //send message(0x0500) to proxyc
+                                        // +----+--------+
+                                        // |VER | METHOD |
+                                        // +----+--------+
+                                        // | 1  |   1    |
+                                        // +----+--------+
+                                        j = 2;
+                                        strcpy(key, "1234");        
+                                        memcpy(pconnections[i]->web_buf,     &j, 4);
+                                        memcpy(pconnections[i]->web_buf + 4, key, 4);
+                                        pconnections[i]->web_buf[8] = 5;
+                                        pconnections[i]->web_buf[9] = 0;
+                                        encrypt_message(pconnections[i]->web_buf + 8, j, key);
+                                        send_message(pconnections[i]->remote_socket, pconnections[i]->web_buf, j + 8, pconnections[i]->remote_ip, pconnections[i]->remote_port);
+                                        pconnections[i]->message_buf_len = 0;
+                                    }
+                                    //else ret == 0, waiting for the complete message
+                                    //{
+                                    //   do nothing here
+                                    //}
+                                }
+                                else if(pconnections[i]->status == CONNECTION_STATUS_AUTH)
+                                {
+                                    memcpy(pconnections[i]->message_buf + pconnections[i]->message_buf_len, pconnections[i]->remote_buf + 8, min(length, 1024 - pconnections[i]->message_buf_len));
+                                    pconnections[i]->message_buf_len += min(length, 1024 - pconnections[i]->message_buf_len);
+                                    char   hostname[256];
+                                    short  port;
+                                    char   cmd;
+                                    struct hostent *host;
+                                    ret = parse_conn_message(pconnections[i]->message_buf, pconnections[i]->message_buf_len, &cmd, hostname, &port);
+                                    if(ret == -1)
+                                    {//wrong message clear message buffer.
+                                        pconnections[i]->message_buf_len = 0;
+                                    }
+                                    else if(ret == 1) //correct message
+                                    {
+                                        pconnections[i]->status = CONNECTION_STATUS_AUTH;
+                                        //send message(0x0500) to proxyc
+                                        //+----+-----+-------+------+----------+----------+
+                                        //|VER | REP |  RSV  | ATYP | BND.ADDR | BND.PORT |
+                                        //+----+-----+-------+------+----------+----------+
+                                        //| 1  |  1  | X'00' |  1   | Variable |    2     |
+                                        //+----+-----+-------+------+----------+----------+
+                                        host = gethostbyname(hostname); 
+                                        webaddr.sin_port = htons(port); 
+                                        webaddr.sin_addr = *((struct in_addr*)host->h_addr); 
+                                        ret = connect(web,(struct sockaddr*)&webaddr,sizeof(webaddr)); 
 
-                                    	  log_info("Header after process:\n%s\n", pconnections[i]->http_header);
-                                    	  
-			                                  webaddr.sin_family = AF_INET;  
-			                                  web = socket(AF_INET,SOCK_STREAM,0);  
-                                        get_hostname(pconnections[i]->http_header, hostname, &port);
-                                        host = gethostbyname(hostname);
-                                        webaddr.sin_port = htons(port);
-                                        webaddr.sin_addr = *((struct in_addr*)host->h_addr);
-                                        ret = connect(web,(struct sockaddr*)&webaddr,sizeof(webaddr));
-                                        if(ret != 0)
-                                        {
-                                            log_info("failed to connect to the website: ret = %d,errno = %d\n", ret, errno);
-                                            close(pconnections[i]->remote_socket);
-                                            free(pconnections[i]);
-                                            pconnections[i] = NULL;
-                                            break;
-                                        }
-                                        strcpy(pconnections[i]->web_ip,inet_ntoa(webaddr.sin_addr));
-                                        pconnections[i]->web_port = ntohs(webaddr.sin_port);
-                                        pconnections[i]->web_socket = web;
+                                        strcpy(key, "1234");        
+                                        memcpy(pconnections[i]->web_buf + 4, key, 4);
+                                        j = 10;
+                                        memcpy(pconnections[i]->web_buf,     &j, 4);
+                                        pconnections[i]->web_buf[8]  = 5;  //VER
+                                        pconnections[i]->web_buf[10] = 0; //RSV
+                                        pconnections[i]->web_buf[11] = 1;
 
-                                        //send header	
-                                        log_info("Connection built from proxyc(%s:%d) to web(%s:%d)\n", 
-                                                   pconnections[i]->remote_ip, pconnections[i]->remote_port, 
-                                                   pconnections[i]->web_ip, pconnections[i]->web_port);
-                                        log_info("header length = %d, str - pconnections[i]->http_header = %d, length =%d, j = %d\n", 
-                                                  strlen(pconnections[i]->http_header), str - pconnections[i]->http_header, length, j);                                        
-                                        
-                                        if(strncasecmp(pconnections[i]->http_header, "CONNECT", strlen("CONNECT")) != 0)
-                                        {
-                                            if((ret = send(pconnections[i]->web_socket, pconnections[i]->http_header, strlen(pconnections[i]->http_header), 0)) < 0)
-                                            {
-        	                                      log_info("error sending data to web(%s:%d)\n" , pconnections[i]->web_ip, pconnections[i]->web_port);
-                                            }
-                                            else if(ret < strlen(pconnections[i]->http_header))
-                                            {
-        	                                      log_info("error sending data to web(%s:%d)--not all data was sent\n" , pconnections[i]->web_ip, pconnections[i]->web_port);
-                                            }
-                                            else
-                                            {
-                                                log_info("%d bytes was sent to the web(%s:%d)\n", strlen(pconnections[i]->http_header), pconnections[i]->web_ip, pconnections[i]->web_port);
-                                                dumpbuffer(pconnections[i]->http_header, strlen(pconnections[i]->http_header), "send_web_f_%s_%d.txt", pconnections[i]->web_ip, pconnections[i]->web_port);
-                                            }
-                                        }
+                                        if(ret != 0) 
+                                        { 
+                                            log_info("failed to connect to the website: ret = %d,errno = %d\n", ret, errno); 
+                                            close(pconnections[i]->remote_socket); 
+                                            free(pconnections[i]); 
+                                            pconnections[i] = NULL; 
+                                            pconnections[i]->web_buf[9] = 1; //REP
+                                        } 
                                         else
-                                        {// already connected send HTTP OK to ProxyC;
-                                            char *response = "HTTP/1.1 200 Connection Established\r\r\r\n";
-                                            length = strlen(response);
-                                            strcpy(pconnections[i]->web_buf + 8, response);
-                                            strcpy(key, "1234");        
-                                            memcpy(pconnections[i]->web_buf, &length, 4);
-                                            memcpy(pconnections[i]->web_buf + 4, key, 4);
-                                            for(j = 0; j < length; j++)
-                                            {
-        	                                      pconnections[i]->web_buf[j + 8] ^= key[j % 4];
-                                            }
-                                            if((ret = send(pconnections[i]->remote_socket, pconnections[i]->web_buf, length + 8, 0)) < 0)
-                                            {
-        	                                      log_info("error sending data to proxyc %s:%d\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
-                                            }
-                                            else if(ret < length + 8)
-                                            {
-        	                                      log_info("error sending data to proxyc %s:%d, not all data was sent\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
-                                            }
-                                            else
-                                            {
-        	                                      log_info("%d bytes was sent to %s:%d proxyc \n" , length + 8, pconnections[i]->remote_ip, pconnections[i]->remote_port);
-                                                dumpbuffer(pconnections[i]->web_buf, length + 8, "send_remote_f_%s_%d.txt", pconnections[i]->remote_ip, pconnections[i]->remote_port);
-                                            }
-                                        }
-                                        //send remaining content
-                                        if(length - j > 0)
                                         {
-                                            if((ret = send(pconnections[i]->web_socket, pconnections[i]->remote_buf + j + 8, length - j, 0)) < 0)
-                                            {
-        	                                      log_info("error sending data to web(%s:%d)\n" , pconnections[i]->web_ip, pconnections[i]->web_port);
-                                            }
-                                            else if(ret < length - j)
-                                            {
-        	                                      log_info("error sending data to web(%s:%d)--not all data was sent\n" , pconnections[i]->web_ip, pconnections[i]->web_port);
-                                            }
-                                            else
-                                            {
-                                                dumpbuffer(pconnections[i]->remote_buf + j + 8, length - j, "send_web_f_%s_%d.txt", pconnections[i]->web_ip, pconnections[i]->web_port);
-                                                log_info("%d bytes was sent to web(%s:%d)\n", length - j, pconnections[i]->web_ip, pconnections[i]->web_port);
-                                            }
+                                            strcpy(pconnections[i]->web_ip,inet_ntoa(webaddr.sin_addr)); 
+                                            pconnections[i]->web_port   = ntohs(webaddr.sin_port); 
+                                            pconnections[i]->web_socket = web; 
+                                            pconnections[i]->web_buf[9] = 0; //REP
+                                            memcpy(pconnections[i]->web_buf + 12, &webaddr.sin_addr, 4);
+                                            memcpy(pconnections[i]->web_buf + 16, &webaddr.sin_port, 2);
                                         }
+                                        encrypt_message(pconnections[i]->web_buf + 8, j, key);
+                                        send_message(pconnections[i]->remote_socket, pconnections[i]->web_buf, j + 8, pconnections[i]->remote_ip, pconnections[i]->remote_port);
+                                        pconnections[i]->message_buf_len = 0;
                                     }
-                                    else //not get the server
-                                    {
-                                    	  //header buffer is full
-                                        if(str - pconnections[i]->http_header > 4095)
-                                        {
-                                            log_info("error wrong header: %s\n", pconnections[i]->http_header);
-                                            close(pconnections[i]->remote_socket);
-                                            free(pconnections[i]);
-                                            pconnections[i] = NULL;
-                                        }
-                                    }
+                                    //else ret == 0, waiting for the complete message
+                                    //{
+                                    //   do nothing here
+                                    //}
                                 }
-                                else
+                                else //pconnections[i]->status == CONNECTION_STATUS_CONN
                                 {
-                                    if((ret = send(pconnections[i]->web_socket, pconnections[i]->remote_buf + 8, length, 0)) < 0)
-                                    {
-	                                      log_info("error sending data to web(%s:%d)\n" , pconnections[i]->web_ip, pconnections[i]->web_port);
-                                    }
-                                    else if(ret < length)
-                                    {
-	                                      log_info("error sending data to web(%s:%d)--not all data was sent\n" , pconnections[i]->web_ip, pconnections[i]->web_port);
-                                    }
-                                    else
-                                    {
-                                        dumpbuffer(pconnections[i]->remote_buf + 8, length, "send_web_f_%s_%d.txt", pconnections[i]->web_ip, pconnections[i]->web_port);
-                                        log_info("%d bytes was sent to web(%s:%d)\n", length, pconnections[i]->web_ip, pconnections[i]->web_port);
-                                    }
+                                    send_message(pconnections[i]->web_socket, pconnections[i]->remote_buf + 8, length, pconnections[i]->web_ip, pconnections[i]->web_port);
                                 }
                                 memmove(pconnections[i]->remote_buf, pconnections[i]->remote_buf + length + 8, pconnections[i]->remote_buf_len - length - 8);
                                 pconnections[i]->remote_buf_len -= length + 8;
