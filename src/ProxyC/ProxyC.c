@@ -92,9 +92,41 @@ void dumpbuffer(char *buffer, int length, char* filename, ...)
             fprintf(f, "  ");
             for(j = i - 31; j <= i; j++)
             {
-                fprintf(f, "%c", buffer[j]);
+                if( (buffer[j] >= 'a' && buffer[j] <= 'z') ||
+                	  (buffer[j] >= 'A' && buffer[j] <= 'Z') ||
+                	  (buffer[j] >= '0' && buffer[j] <= '9'))
+                {
+                    fprintf(f, "%c", buffer[j]);
+                }
+                else
+                {
+                    fprintf(f, ".");
+                }
             }
             fprintf(f, "\n");
+        }
+    }
+    if( (i + 1) %32 != 0 )
+    {
+        do
+        {
+            fprintf(f, "   ");	
+            i++;
+        }
+        while((i + 1) % 32 != 0);
+        fprintf(f, "  ");
+        for(j = i - 31; j < length; j++)
+        {
+            if( (buffer[j] >= 'a' && buffer[j] <= 'z') ||
+        	      (buffer[j] >= 'A' && buffer[j] <= 'Z') ||
+        	      (buffer[j] >= '0' && buffer[j] <= '9'))
+            {
+                fprintf(f, "%c", buffer[j]);
+            }
+            else
+            {
+                fprintf(f, ".");
+            }
         }
     }
     fprintf(f, "\n");
@@ -299,8 +331,6 @@ int main(int argc, char* argv[])
                                 {
         	                          pconnections[i]->remote_buf[j + 8] ^= key[j % 4];
                                 }
-                                pconnections[i]->remote_buf[length + 8] = '\0';
-                                
                                 
                                 if((ret = send(pconnections[i]->client_socket, pconnections[i]->remote_buf + 8, length, 0)) < 0)
                                 {

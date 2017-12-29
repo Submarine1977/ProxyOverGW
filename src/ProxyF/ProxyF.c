@@ -27,7 +27,7 @@
  
 #define CONNECTION_STATUS_INIT 0
 #define CONNECTION_STATUS_AUTH 1
-#define CONNECTION_STATUS_CONN 1
+#define CONNECTION_STATUS_CONN 2
 
 struct proxy_connection
 {
@@ -94,9 +94,41 @@ void dumpbuffer(char *buffer, int length, char* filename, ...)
             fprintf(f, "  ");
             for(j = i - 31; j <= i; j++)
             {
-                fprintf(f, "%c", buffer[j]);
+                if( (buffer[j] >= 'a' && buffer[j] <= 'z') ||
+                	  (buffer[j] >= 'A' && buffer[j] <= 'Z') ||
+                	  (buffer[j] >= '0' && buffer[j] <= '9'))
+                {
+                    fprintf(f, "%c", buffer[j]);
+                }
+                else
+                {
+                    fprintf(f, ".");
+                }
             }
             fprintf(f, "\n");
+        }
+    }
+    if( (i + 1) %32 != 0 )
+    {
+        do
+        {
+            fprintf(f, "   ");	
+            i++;
+        }
+        while((i + 1) % 32 != 0);
+        fprintf(f, "  ");
+        for(j = i - 31; j < length; j++)
+        {
+            if( (buffer[j] >= 'a' && buffer[j] <= 'z') ||
+        	      (buffer[j] >= 'A' && buffer[j] <= 'Z') ||
+        	      (buffer[j] >= '0' && buffer[j] <= '9'))
+            {
+                fprintf(f, "%c", buffer[j]);
+            }
+            else
+            {
+                fprintf(f, ".");
+            }
         }
     }
     fprintf(f, "\n");
@@ -187,7 +219,8 @@ int parse_conn_message(char * buffer, int length, char* cmd, char* host, short* 
         if(length == 10)
         {
             sprintf(host, "%ud.%ud.%ud.%ud", buffer[4], buffer[5], buffer[6], buffer[7]);
-            memcpy(port, buffer + 8, 2);
+            *port = buffer[8];
+            *port = (*port << 8) + (unsigned char)buffer[9];
             return 1;
         }
         else if(length < 10)
@@ -207,7 +240,8 @@ int parse_conn_message(char * buffer, int length, char* cmd, char* host, short* 
         {
             memcpy(host, buffer + 5, t);
             host[t] = '\0';
-            memcpy(port, buffer + 5 + t, 2);
+            *port = buffer[5 + t];
+            *port = (*port << 8) + (unsigned char)buffer[6 + t];
             return 1;
         }
         else if( length < 7 + t)
@@ -372,23 +406,11 @@ int main(int argc, char *argv[])
                         }
                         else
                         {
-                            strcpy(key, "1234");        
+                            strcpy(key, "1234");
                             memcpy(pconnections[i]->web_buf, &length, 4);
                             memcpy(pconnections[i]->web_buf + 4, key, 4);
-                            encrypt_message(pconnections[i]->web_buf, length, key);
-                            if((ret = send(pconnections[i]->remote_socket, pconnections[i]->web_buf, length + 8, 0)) < 0)
-                            {
-        	                      log_info("error sending data to proxyc %s:%d\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
-                            }
-                            else if(ret < length + 8)
-                            {
-        	                      log_info("error sending data to proxyc %s:%d, not all data was sent\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
-                            }
-                            else
-                            {
-        	                      log_info("%d bytes was sent to %s:%d proxyc \n" , length + 8, pconnections[i]->remote_ip, pconnections[i]->remote_port);
-                                dumpbuffer(pconnections[i]->web_buf, length + 8, "send_remote_f_%s_%d.txt", pconnections[i]->remote_ip, pconnections[i]->remote_port);
-                            }
+                            encrypt_message(pconnections[i]->web_buf + 8, length, key);
+                            send_message(pconnections[i]->remote_socket, pconnections[i]->web_buf, length + 8, pconnections[i]->remote_ip, pconnections[i]->remote_port);
                         }
                     }
                     if(FD_ISSET(pconnections[i]->remote_socket, &rdfs))
@@ -473,7 +495,6 @@ int main(int argc, char *argv[])
                                     }
                                     else if(ret == 1) //correct message
                                     {
-                                        pconnections[i]->status = CONNECTION_STATUS_AUTH;
                                         //send message(0x0500) to proxyc
                                         //+----+-----+-------+------+----------+----------+
                                         //|VER | REP |  RSV  | ATYP | BND.ADDR | BND.PORT |
@@ -481,8 +502,11 @@ int main(int argc, char *argv[])
                                         //| 1  |  1  | X'00' |  1   | Variable |    2     |
                                         //+----+-----+-------+------+----------+----------+
                                         host = gethostbyname(hostname); 
-                                        webaddr.sin_port = htons(port); 
-                                        webaddr.sin_addr = *((struct in_addr*)host->h_addr); 
+
+                                        webaddr.sin_family = AF_INET;  
+                                        webaddr.sin_port   = htons(port); 
+                                        webaddr.sin_addr   = *((struct in_addr*)host->h_addr); 
+                                        web = socket(AF_INET,SOCK_STREAM,0);  
                                         ret = connect(web,(struct sockaddr*)&webaddr,sizeof(webaddr)); 
 
                                         strcpy(key, "1234");        
@@ -495,20 +519,20 @@ int main(int argc, char *argv[])
 
                                         if(ret != 0) 
                                         { 
-                                            log_info("failed to connect to the website: ret = %d,errno = %d\n", ret, errno); 
-                                            close(pconnections[i]->remote_socket); 
-                                            free(pconnections[i]); 
-                                            pconnections[i] = NULL; 
+                                            log_info("failed to connect to the website: ret = %d,errno = %d, cmd = %d, hostname = %s, host = %s, port = %d\n", 
+                                                       ret, errno, cmd, hostname, inet_ntoa(webaddr.sin_addr), port); 
                                             pconnections[i]->web_buf[9] = 1; //REP
                                         } 
                                         else
                                         {
+                                            log_info("connect to the website: hostname = %s, host = %s, port = %d\n", hostname, inet_ntoa(webaddr.sin_addr), port); 
                                             strcpy(pconnections[i]->web_ip,inet_ntoa(webaddr.sin_addr)); 
                                             pconnections[i]->web_port   = ntohs(webaddr.sin_port); 
                                             pconnections[i]->web_socket = web; 
                                             pconnections[i]->web_buf[9] = 0; //REP
                                             memcpy(pconnections[i]->web_buf + 12, &webaddr.sin_addr, 4);
                                             memcpy(pconnections[i]->web_buf + 16, &webaddr.sin_port, 2);
+                                            pconnections[i]->status = CONNECTION_STATUS_CONN;
                                         }
                                         encrypt_message(pconnections[i]->web_buf + 8, j, key);
                                         send_message(pconnections[i]->remote_socket, pconnections[i]->web_buf, j + 8, pconnections[i]->remote_ip, pconnections[i]->remote_port);
