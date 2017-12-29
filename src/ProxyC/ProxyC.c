@@ -28,7 +28,7 @@
 //                 |client2| <------ | remote2 |            |remote2|  encrypt| web2   |
 //                 |-------|---------|---------|            |-------|---------|--------|
 
-#define DEBUG            1
+#define DEBUG            0
 #define BUFFER_SIZE      65535
 #define MAX_CONNECTION_COUNT 128
 
@@ -77,6 +77,11 @@ void dumpbuffer(char *buffer, int length, char* filename, ...)
     char str[16];
     char name[128];
 
+    if(DEBUG == 0)
+    {
+        return;
+    }
+    
     va_start(args, filename);
     n = vsprintf(name, filename, args);
     va_end(args);
