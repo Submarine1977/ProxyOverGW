@@ -291,7 +291,7 @@ int main(int argc, char* argv[])
                             {
         	                      pconnections[i]->client_buf[j + 8] ^= key[j % 4];
                             }
-                            if((ret = send(pconnections[i]->remote_socket, pconnections[i]->client_buf, length + 8, 0)) < 0)
+                            if((ret = send(pconnections[i]->remote_socket, pconnections[i]->client_buf, length + 8, MSG_NOSIGNAL)) < 0)
                             {
         	                      log_info("error sending data to proxyf %s:%d\n" , pconnections[i]->remote_ip, pconnections[i]->remote_port);
                             }
@@ -337,7 +337,7 @@ int main(int argc, char* argv[])
         	                          pconnections[i]->remote_buf[j + 8] ^= key[j % 4];
                                 }
                                 
-                                if((ret = send(pconnections[i]->client_socket, pconnections[i]->remote_buf + 8, length, 0)) < 0)
+                                if((ret = send(pconnections[i]->client_socket, pconnections[i]->remote_buf + 8, length, MSG_NOSIGNAL)) < 0)
                                 {
                                     log_info("error sending data to client(%s:%d)\n" , pconnections[i]->client_ip, pconnections[i]->client_port);
                                 }

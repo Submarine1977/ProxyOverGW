@@ -282,7 +282,7 @@ int parse_conn_message(char * buffer, int length, char* cmd, struct sockaddr_in 
 void send_message(int socket, char* buffer, int length, char* ip, int port)
 {
     int ret;
-    if((ret = send(socket, buffer, length, 0)) < 0)
+    if((ret = send(socket, buffer, length, MSG_NOSIGNAL)) < 0)
     {
         log_info("error sending data to (%s:%d)\n" , ip, port);
     }
