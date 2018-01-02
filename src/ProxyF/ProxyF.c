@@ -206,9 +206,11 @@ int parse_auth_message(char * buffer, int length, char *number_methods, char* me
 //-1 wrong
 //0  message not complete
 //1  succeeded
-int parse_conn_message(char * buffer, int length, char* cmd, char* host, short* port)
+int parse_conn_message(char * buffer, int length, char* cmd, struct sockaddr_in *addr)
 {
     int t;
+    char hostname[128];
+    struct hostent *host;
     if(length < 6)
     {
         return 0;
@@ -223,9 +225,9 @@ int parse_conn_message(char * buffer, int length, char* cmd, char* host, short* 
     {
         if(length == 10)
         {
-            sprintf(host, "%ud.%ud.%ud.%ud", buffer[4], buffer[5], buffer[6], buffer[7]);
-            *port = buffer[8];
-            *port = (*port << 8) + (unsigned char)buffer[9];
+            addr->sin_family = AF_INET;  
+            memcpy(&addr->sin_addr, buffer + 4, 4);
+            memcpy(&addr->sin_port, buffer + 8, 2);
             return 1;
         }
         else if(length < 10)
@@ -243,11 +245,21 @@ int parse_conn_message(char * buffer, int length, char* cmd, char* host, short* 
         t = (unsigned char)buffer[4];
         if(length == 7 + t)
         {
-            memcpy(host, buffer + 5, t);
-            host[t] = '\0';
-            *port = buffer[5 + t];
-            *port = (*port << 8) + (unsigned char)buffer[6 + t];
-            return 1;
+            memcpy(hostname, buffer + 5, t);
+            hostname[t] = '\0';
+            host = gethostbyname(hostname); 
+            if(host == NULL)
+            {
+                log_info("error sock5 conn_message, hostname is wrong %s\n", hostname);
+                return -1;
+            }
+            else
+            {
+                addr->sin_family = AF_INET;  
+                addr->sin_addr   = *((struct in_addr*)host->h_addr); 
+                memcpy(&addr->sin_port, buffer + t + 5, 2);
+                return 1;
+            }
         }
         else if( length < 7 + t)
         {
@@ -489,13 +501,12 @@ int main(int argc, char *argv[])
                                 {
                                     memcpy(pconnections[i]->message_buf + pconnections[i]->message_buf_len, pconnections[i]->remote_buf + 8, min(length, 1024 - pconnections[i]->message_buf_len));
                                     pconnections[i]->message_buf_len += min(length, 1024 - pconnections[i]->message_buf_len);
-                                    char   hostname[256];
-                                    short  port;
                                     char   cmd;
-                                    struct hostent *host;
-                                    ret = parse_conn_message(pconnections[i]->message_buf, pconnections[i]->message_buf_len, &cmd, hostname, &port);
+                                    ret = parse_conn_message(pconnections[i]->message_buf, pconnections[i]->message_buf_len, &cmd, &webaddr);
                                     if(ret == -1)
                                     {//wrong message clear message buffer.
+                                    	  log_info("wrong socks message:\n");
+                                    	  dumpbuffer(pconnections[i]->message_buf, pconnections[i]->message_buf_len, "log_f.txt");
                                         pconnections[i]->message_buf_len = 0;
                                     }
                                     else if(ret == 1) //correct message
@@ -506,11 +517,6 @@ int main(int argc, char *argv[])
                                         //+----+-----+-------+------+----------+----------+
                                         //| 1  |  1  | X'00' |  1   | Variable |    2     |
                                         //+----+-----+-------+------+----------+----------+
-                                        host = gethostbyname(hostname); 
-
-                                        webaddr.sin_family = AF_INET;  
-                                        webaddr.sin_port   = htons(port); 
-                                        webaddr.sin_addr   = *((struct in_addr*)host->h_addr); 
                                         web = socket(AF_INET,SOCK_STREAM,0);  
                                         ret = connect(web,(struct sockaddr*)&webaddr,sizeof(webaddr)); 
 
@@ -524,13 +530,13 @@ int main(int argc, char *argv[])
 
                                         if(ret != 0) 
                                         { 
-                                            log_info("failed to connect to the website: ret = %d,errno = %d, cmd = %d, hostname = %s, host = %s, port = %d\n", 
-                                                       ret, errno, cmd, hostname, inet_ntoa(webaddr.sin_addr), port); 
+                                            log_info("failed to connect to the website: ret = %d,errno = %d, cmd = %d, host = %s, port = %d\n", 
+                                                       ret, errno, cmd, inet_ntoa(webaddr.sin_addr), ntohs(webaddr.sin_port)); 
                                             pconnections[i]->web_buf[9] = 1; //REP
                                         } 
                                         else
                                         {
-                                            log_info("connect to the website: hostname = %s, host = %s, port = %d\n", hostname, inet_ntoa(webaddr.sin_addr), port); 
+                                            log_info("connect to the website: host = %s, port = %d\n", inet_ntoa(webaddr.sin_addr), ntohs(webaddr.sin_port)); 
                                             strcpy(pconnections[i]->web_ip,inet_ntoa(webaddr.sin_addr)); 
                                             pconnections[i]->web_port   = ntohs(webaddr.sin_port); 
                                             pconnections[i]->web_socket = web; 
