@@ -1,0 +1,18 @@
+This software provides a way of proxy over Great Firewall of China using socks5.
+
+Here is how the software works:
+(1) Web browser send request to ProxyC.
+(2) PorxyC encrypts the request and send to ProxyF.
+(3) The encryped request go through the Great Firewall
+(5) ProxyF receives the request, decrypts it and send to the web server, such as google or baidu.
+(6) The web server received the request, and send the response to ProxyF.
+(7) ProxyF encrypts the response and send to PorxyC.
+(8) The encryped response go through the Great Firewall
+(6) The ProxyC received the response, decrypt it and send to web browser.
+
+You need a linux server out of China on which you run ProxyF.
+Usage: ProxyF Port
+
+You also need a linux server with China on which you run ProxyC. This server can be you local machine, if it is linux.
+Usage: ProxyC LocalIP LocalPort RemoteIP RemotePort
+
