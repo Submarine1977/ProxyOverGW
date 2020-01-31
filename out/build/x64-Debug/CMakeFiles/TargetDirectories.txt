@@ -1,0 +1,8 @@
+C:/Work/Code/Proxy/out/build/x64-Debug/CMakeFiles/edit_cache.dir
+C:/Work/Code/Proxy/out/build/x64-Debug/CMakeFiles/rebuild_cache.dir
+C:/Work/Code/Proxy/out/build/x64-Debug/bin/ProxyC/CMakeFiles/edit_cache.dir
+C:/Work/Code/Proxy/out/build/x64-Debug/bin/ProxyC/CMakeFiles/proxyc.dir
+C:/Work/Code/Proxy/out/build/x64-Debug/bin/ProxyC/CMakeFiles/rebuild_cache.dir
+C:/Work/Code/Proxy/out/build/x64-Debug/bin/ProxyF/CMakeFiles/proxyf.dir
+C:/Work/Code/Proxy/out/build/x64-Debug/bin/ProxyF/CMakeFiles/edit_cache.dir
+C:/Work/Code/Proxy/out/build/x64-Debug/bin/ProxyF/CMakeFiles/rebuild_cache.dir

@@ -1,16 +1,23 @@
-#include<stdio.h>
-#include<stdlib.h>
-#include<poll.h>  
-#include<netdb.h>
+﻿#define WINDOWS
+#include<stdio.h>  
+#include <stdlib.h>
 #include<sys/types.h>  
-#include<sys/socket.h>  
-#include<arpa/inet.h>  
-#include<unistd.h>  
 #include<string.h>  
 #include<errno.h>
 #include <time.h>
-#include <sys/time.h>
 #include <stdarg.h>
+#ifndef WINDOWS
+#include<poll.h>  
+#include<netdb.h>
+#include<sys/socket.h>  
+#include<arpa/inet.h>  
+#include<unistd.h>  
+#include <sys/time.h>
+#else
+#include <winsock.h>
+#pragma comment(lib, "ws2_32.lib")
+#endif
+
 
 //                              ProxyC                             ProxyF
 //                 |-------|---------|---------|            |-------|---------|--------| 
@@ -40,10 +47,13 @@ struct proxy_connection
 };
 struct proxy_connection *pconnections[MAX_CONNECTION_COUNT];
 
+#ifndef WINDOWS
 int min(int x, int y)
 {
-    return x < y? x:y;
+    return x < y ? x : y;
 }
+#endif // !WINDOWS
+
 int log_info(char *fmt, ... )
 {
     time_t timep; 
@@ -282,7 +292,11 @@ int parse_conn_message(char * buffer, int length, char* cmd, struct sockaddr_in 
 void send_message(int socket, char* buffer, int length, char* ip, int port)
 {
     int ret;
-    if((ret = send(socket, buffer, length, MSG_NOSIGNAL)) < 0)
+#ifndef WINDOWS                                
+    if ((ret = send(socket, buffer, length, MSG_NOSIGNAL)) < 0)
+#else
+    if ((ret = send(socket, buffer, length, 0)) < 0)
+#endif
     {
         log_info("error sending data to (%s:%d)\n" , ip, port);
     }
@@ -304,7 +318,11 @@ int main(int argc, char *argv[])
     int i, j, ret=0;  
     fd_set  rdfs;
     struct sockaddr_in remoteaddr,serveraddr,webaddr;  
-    socklen_t remotelen = sizeof(remoteaddr);  
+#ifndef WINDOWS
+    socklen_t remotelen = sizeof(remoteaddr);
+#else
+    int remotelen = sizeof(remoteaddr);
+#endif // !WINDOWS
     int    remote , server, web;  
     
     
@@ -313,7 +331,20 @@ int main(int argc, char *argv[])
         printf("Usage: %s Port\n", argv[0]);
         return -1;
     }
-  
+
+#ifdef WINDOWS
+    WSADATA wsaData;
+    int err = WSAStartup(0x202, &wsaData);   if (err != 0)
+    {
+        return 0;
+    }
+    else if (LOBYTE(wsaData.wVersion) != 2 || HIBYTE(wsaData.wVersion) != 2)   //¼ì²âÊÇ·ñÖ§³ÖÕâ¸ö°æ±¾µÄsocket
+    {
+        WSACleanup();
+        return 0;
+    }
+#endif
+
     serveraddr.sin_family=AF_INET;  
     serveraddr.sin_addr.s_addr=htonl(INADDR_ANY);  
     serveraddr.sin_port=htons(atoi(argv[1]));
@@ -383,7 +414,11 @@ int main(int argc, char *argv[])
                     if(i == MAX_CONNECTION_COUNT)
                     {
                         log_info("ERR: failed to connect to the server, too many connections\n");
+#ifndef WINDOWS
                         close(remote);
+#else
+                        closesocket(remote);
+#endif
                     }
                     else
                     {
@@ -415,8 +450,13 @@ int main(int argc, char *argv[])
                         else if(length == 0) //connection closed
                         {
         	                  log_info("socket %s: %d closed!\n", pconnections[i]->web_ip, pconnections[i]->web_port);
-        	                  close(pconnections[i]->web_socket);
-        	                  close(pconnections[i]->remote_socket);
+#ifndef WINDOWS
+                              close(pconnections[i]->web_socket);
+                              close(pconnections[i]->remote_socket);
+#else
+                              closesocket(pconnections[i]->web_socket);
+                              closesocket(pconnections[i]->remote_socket);
+#endif
         	                  free(pconnections[i]);
         	                  pconnections[i] = NULL;
         	                  continue;
@@ -442,11 +482,19 @@ int main(int argc, char *argv[])
                         else if(length == 0) //connection closed
                         {
         	                  log_info("proxyc socket %s:%d closed!\n", pconnections[i]->remote_ip, pconnections[i]->remote_port);
-        	                  if(pconnections[i]->web_socket > 0)
+#ifndef WINDOWS
+                              if(pconnections[i]->web_socket > 0)
         	                  {
         	                      close(pconnections[i]->web_socket);
         	                  }
         	                  close(pconnections[i]->remote_socket);
+#else
+                              if (pconnections[i]->web_socket > 0)
+                              {
+                                  closesocket(pconnections[i]->web_socket);
+                              }
+                              closesocket(pconnections[i]->remote_socket);
+#endif
         	                  free(pconnections[i]);
         	                  pconnections[i] = NULL;
         	                  continue;
@@ -576,6 +624,10 @@ int main(int argc, char *argv[])
         }
     }
     printf("Exited! \n");
+#ifndef WINDOWS
     close(server);
+#else
+    closesocket(server);
+#endif
     return 0;  
 }  
