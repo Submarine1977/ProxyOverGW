@@ -1,4 +1,4 @@
-﻿#define WINDOWS
+﻿//#define WINDOWS
 #include<stdio.h>  
 #include <stdlib.h>
 #include<sys/types.h>  
@@ -13,6 +13,9 @@
 #include<arpa/inet.h>  
 #include<unistd.h>  
 #include <sys/time.h>
+#define BOOL unsigned char
+#define TRUE 1
+#define FALSE 0
 #else
 #include <winsock.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -211,8 +214,11 @@ int parse_http_head(char* buffer, struct http_header* header, BOOL* bHttps)
     char* p;
     char* ptr;
     const char* delim = "\r\n";
-
+#ifndef WINDOWS
+    p = strtok_r(buffer, delim, &ptr);
+#else
     p = strtok_s(buffer, delim, &ptr);
+#endif
     if (p == NULL)
     {
         return -1;
@@ -245,7 +251,11 @@ int parse_http_head(char* buffer, struct http_header* header, BOOL* bHttps)
     {
         return -1;
     }
+#ifndef WINDOWS
+    p = strtok_r(NULL, delim, &ptr);
+#else
     p = strtok_s(NULL, delim, &ptr);
+#endif
 
     while (p) 
     {
@@ -269,7 +279,11 @@ int parse_http_head(char* buffer, struct http_header* header, BOOL* bHttps)
         default:
             break;
         }
+#ifndef WINDOWS
+        p = strtok_r(NULL, delim, &ptr);
+#else
         p = strtok_s(NULL, delim, &ptr);
+#endif
         if (p == NULL || strlen(p) <= 0)
         {
             return ptr - buffer;
@@ -281,7 +295,7 @@ int parse_http_head(char* buffer, struct http_header* header, BOOL* bHttps)
 int parse_conn_message(char* buffer, int length, struct sockaddr_in* addr, BOOL *bHttps)
 {
     int ret;
-    strcpy_s(global_buf, BUFFER_SIZE, buffer);
+    strcpy(global_buf, buffer);
     struct http_header header;
     ret = parse_http_head(global_buf, &header, bHttps);
     if (ret <= 0)
@@ -305,14 +319,14 @@ int parse_conn_message(char* buffer, int length, struct sockaddr_in* addr, BOOL 
         }
     }
 
-    HOSTENT* hostent = gethostbyname(header.host);
+    struct hostent* hostent = gethostbyname(header.host);
     if (!hostent) 
     {
         return -1;
     }
-    IN_ADDR inAddr = *((IN_ADDR*)*hostent->h_addr_list);
+    struct in_addr inAddr = *((struct in_addr*)*hostent->h_addr_list);
     addr->sin_family = AF_INET;
-    addr->sin_addr.S_un.S_addr = inet_addr(inet_ntoa(inAddr));
+    addr->sin_addr.s_addr = inet_addr(inet_ntoa(inAddr));
     if (port != NULL)
     {
         addr->sin_port = htons(atoi(port));

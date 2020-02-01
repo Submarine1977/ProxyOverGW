@@ -1,9 +1,0 @@
-C:/Work/Code/Proxy/out/build/x64-Release/CMakeFiles/edit_cache.dir
-C:/Work/Code/Proxy/out/build/x64-Release/CMakeFiles/rebuild_cache.dir
-C:/Work/Code/Proxy/out/build/x64-Release/bin/ProxyC/CMakeFiles/edit_cache.dir
-C:/Work/Code/Proxy/out/build/x64-Release/bin/ProxyC/CMakeFiles/proxyc.dir
-C:/Work/Code/Proxy/out/build/x64-Release/bin/ProxyC/CMakeFiles/rebuild_cache.dir
-C:/Work/Code/Proxy/out/build/x64-Release/bin/ProxyF/CMakeFiles/proxyfsocks5.dir
-C:/Work/Code/Proxy/out/build/x64-Release/bin/ProxyF/CMakeFiles/proxyfhttp.dir
-C:/Work/Code/Proxy/out/build/x64-Release/bin/ProxyF/CMakeFiles/edit_cache.dir
-C:/Work/Code/Proxy/out/build/x64-Release/bin/ProxyF/CMakeFiles/rebuild_cache.dir
