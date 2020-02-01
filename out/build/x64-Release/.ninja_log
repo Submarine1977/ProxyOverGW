@@ -1,0 +1,16 @@
+# ninja log v5
+1	23	0	clean	ff566856e40bcdd
+1	964	602223720	bin/ProxyC/CMakeFiles/proxyc.dir/ProxyC.c.obj	73a09102fbe30478
+20	1040	602223720	bin/ProxyF/CMakeFiles/proxyfhttp.dir/ProxyFHTTP.c.obj	6ca813eda72b33eb
+12	1119	602223720	bin/ProxyF/CMakeFiles/proxyfsocks5.dir/ProxyFSocks5.c.obj	e3b561ef109fa33e
+967	1426	602223720	bin/ProxyC/proxyc.exe	ac7772057241a0e1
+1042	1444	602223720	bin/ProxyF/proxyfhttp.exe	6f79df25df79080b
+1122	1467	602223720	bin/ProxyF/proxyfsocks5.exe	32539fc0567debbb
+0	22	0	clean	ff566856e40bcdd
+0	19	0	clean	ff566856e40bcdd
+2	903	602223828	bin/ProxyC/CMakeFiles/proxyc.dir/ProxyC.c.obj	73a09102fbe30478
+24	1026	602223828	bin/ProxyF/CMakeFiles/proxyfhttp.dir/ProxyFHTTP.c.obj	6ca813eda72b33eb
+12	1073	602223828	bin/ProxyF/CMakeFiles/proxyfsocks5.dir/ProxyFSocks5.c.obj	e3b561ef109fa33e
+906	1291	602223828	bin/ProxyC/proxyc.exe	ac7772057241a0e1
+1033	1389	602223828	bin/ProxyF/proxyfhttp.exe	6f79df25df79080b
+1076	1405	602223829	bin/ProxyF/proxyfsocks5.exe	32539fc0567debbb

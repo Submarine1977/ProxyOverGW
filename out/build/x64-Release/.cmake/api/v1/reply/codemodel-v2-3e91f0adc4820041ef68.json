@@ -43,11 +43,12 @@
 					"source" : "src/ProxyF",
 					"targetIndexes" : 
 					[
-						1
+						1,
+						2
 					]
 				}
 			],
-			"name" : "Debug",
+			"name" : "Release",
 			"projects" : 
 			[
 				{
@@ -61,7 +62,8 @@
 					"targetIndexes" : 
 					[
 						0,
-						1
+						1,
+						2
 					]
 				}
 			],
@@ -70,15 +72,22 @@
 				{
 					"directoryIndex" : 1,
 					"id" : "proxyc::@aeac97c5a5caaa94e5fc",
-					"jsonFile" : "target-proxyc-Debug-6bc03dcfe52d515a71ed.json",
+					"jsonFile" : "target-proxyc-Release-c975e6fa4d2cff7a33f2.json",
 					"name" : "proxyc",
 					"projectIndex" : 0
 				},
 				{
 					"directoryIndex" : 2,
-					"id" : "proxyf::@796859b2a0a1bdeaac90",
-					"jsonFile" : "target-proxyf-Debug-555bdf17b52a460ccdb5.json",
-					"name" : "proxyf",
+					"id" : "proxyfhttp::@796859b2a0a1bdeaac90",
+					"jsonFile" : "target-proxyfhttp-Release-7dddf0842ab5bfe20d22.json",
+					"name" : "proxyfhttp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 2,
+					"id" : "proxyfsocks5::@796859b2a0a1bdeaac90",
+					"jsonFile" : "target-proxyfsocks5-Release-af22964a711da7843d24.json",
+					"name" : "proxyfsocks5",
 					"projectIndex" : 0
 				}
 			]
@@ -87,7 +96,7 @@
 	"kind" : "codemodel",
 	"paths" : 
 	{
-		"build" : "C:/Work/Code/Proxy/out/build/x64-Debug",
+		"build" : "C:/Work/Code/Proxy/out/build/x64-Release",
 		"source" : "C:/Work/Code/Proxy"
 	},
 	"version" : 

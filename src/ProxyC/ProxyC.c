@@ -163,11 +163,12 @@ int main(int argc, char* argv[])
  
 #ifdef WINDOWS
 	WSADATA wsaData;
-	int err = WSAStartup(0x202, &wsaData);   if (err != 0)
+	int err = WSAStartup(0x202, &wsaData);   
+    if (err != 0)
 	{
 		return 0;
 	}
-	else if (LOBYTE(wsaData.wVersion) != 2 || HIBYTE(wsaData.wVersion) != 2)   //¼ì²âÊÇ·ñÖ§³ÖÕâ¸ö°æ±¾µÄsocket
+	else if (LOBYTE(wsaData.wVersion) != 2 || HIBYTE(wsaData.wVersion) != 2)   //initial socket
 	{
 		WSACleanup();
 		return 0;
@@ -238,6 +239,7 @@ int main(int argc, char* argv[])
                             strcpy(pconnections[i]->client_ip,inet_ntoa(clientaddr.sin_addr));
                             pconnections[i]->client_port   = ntohs(clientaddr.sin_port);
                             pconnections[i]->client_buf_len = 0;
+                            pconnections[i]->remote_buf_len = 0;
                             break;
                         }
                     }
@@ -291,7 +293,7 @@ int main(int argc, char* argv[])
                     }
                     if(FD_ISSET(pconnections[i]->client_socket, &rdfs))
                     {//read from client, encrypt and then send it to remote
-                    	  memset(pconnections[i]->client_buf, 0, BUFFER_SIZE);
+                    	memset(pconnections[i]->client_buf, 0, BUFFER_SIZE);
                         length     = recv(pconnections[i]->client_socket, pconnections[i]->client_buf + 8, BUFFER_SIZE - 8, 0);
                         dumpbuffer(pconnections[i]->client_buf + 8, length, "recv_client_c_%s_%d.txt", pconnections[i]->client_ip, pconnections[i]->client_port);
                         log_info("%d bytes was recieved from client %s:%d\n", length, pconnections[i]->client_ip, pconnections[i]->client_port);
